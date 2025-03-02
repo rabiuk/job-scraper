@@ -176,7 +176,6 @@ def scrape_github(url):
     logging.info(f"Filtered to {len(jobs)} GitHub jobs with valid links")
     return jobs
 
-
 def scrape_simplify(url):
     """Scrape job listings from Simplify.jobs by clicking each card and parsing detail pages."""
     logging.info(f"Scraping Simplify URL: {url}")
@@ -259,8 +258,8 @@ def scrape_simplify(url):
                 
                 back_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'flex items-center gap-2')]")))
                 driver.execute_script("arguments[0].click();", back_button)
-                wait.until(EC.presence_of_element_located((By.XPATH, "//div[@data-testid='job-card']")))  # Wait for list page cards
-                time.sleep(1)  # Reduced delay since wait confirms load
+                wait.until(EC.presence_of_element_located((By.XPATH, "//div[@data-testid='job-card']")))
+                time.sleep(1)
                 
             except Exception as e:
                 import traceback
@@ -298,7 +297,7 @@ def send_discord_notification(job):
     response = webhook.execute()
     if response.status_code not in [200, 204]:
         print(f"Failed to send Discord notification: {response.status_code} - {response.text}")
-    time.sleep(2)  # 2 seconds to avoid rate limits
+    time.sleep(2)
 
 def main():
     if not DISCORD_WEBHOOK_URL:
@@ -320,18 +319,26 @@ def main():
         
         if not all_jobs:
             print("No jobs found in this run")
+        else:
+            # Send separator with current date and time
+            timestamp = time.strftime("%b %d, %Y %I:%M %p", time.localtime())
+            separator = f"-----------------------------\n**NEW JOB ALERT - {timestamp}**\n______________________________"
+            webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=separator)
+            webhook.execute()
+            time.sleep(2)  # Delay after separator
         
         for job in all_jobs:
             job_id = job.get('key', job['link'])
             if job_id not in seen_jobs:
                 print(f"New job found ({job['source']}): {job['title']} - {job['company']} - {job['location']} - {job['time_posted']} - {job['link']}")
+                logging.info(f"New job found ({job['source']}): {job['title']} - {job['company']} - {job['location']} - {job['time_posted']} - {job['link']}")
                 send_discord_notification(job)
                 seen_jobs.add(job_id)
             else:
-                print(f"Job already seen ({job['source']}): {job['title']} - {job['link']}")
+                logging.info(f"Job already seen ({job['source']}): {job['title']} - {job['link']}")
         save_seen_jobs(seen_jobs)
         print("Finished checking, waiting 2 hours...")
-        time.sleep(7200)  # 2 hours in seconds
+        time.sleep(7200)
 
 if __name__ == "__main__":
     main()
