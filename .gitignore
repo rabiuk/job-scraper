@@ -1,0 +1,20 @@
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables
+.env
+
+# Logs and debug files
+scraper.log
+debug/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Misc
+*.DS_Store  # Mac junk
+*.log
