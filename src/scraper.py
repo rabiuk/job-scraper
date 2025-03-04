@@ -16,6 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 import pickle  # For saving/loading cookies
+import re  # For parsing LinkedIn job IDs
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, filename="scraper.log", filemode="a",
@@ -76,18 +77,23 @@ def load_cookies(driver, path):
         return False
 
 def load_seen_jobs():
-    """Load previously seen job links from file."""
+    """Load previously seen job links from file, organized by source."""
     try:
         with open(SEEN_JOBS_FILE, 'r') as f:
-            return set(json.load(f))
+            data = json.load(f)
+            # Convert lists to sets for each source
+            return {source: set(ids) for source, ids in data.items()}
     except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+        # Initialize with empty sets for each source
+        return {source: set() for source in CONFIG.keys()}
 
 def save_seen_jobs(seen_jobs):
-    """Save seen job links to file."""
+    """Save seen job links to file, organized by source."""
     os.makedirs(os.path.dirname(SEEN_JOBS_FILE), exist_ok=True)
+    # Convert sets to lists for JSON serialization
+    data_to_save = {source: list(ids) for source, ids in seen_jobs.items()}
     with open(SEEN_JOBS_FILE, 'w') as f:
-        json.dump(list(seen_jobs), f)
+        json.dump(data_to_save, f)
 
 def scrape_linkedin(url):
     """Scrape job listings from LinkedIn, filtering reposts by checking detail pages."""
@@ -201,9 +207,13 @@ def scrape_linkedin(url):
             if link != "No Link Available" and not link.startswith('http'):
                 link = "https://www.linkedin.com" + link
 
-            # Skip if no valid link
-            if link == "No Link Available":
-                logging.info(f"Skipping job (no link) - Title: {title}, Company: {company}")
+            # Extract LinkedIn job ID from the URL for a stable identifier
+            job_id_match = re.search(r'jobs/view/(\d+)/', link)
+            job_id = job_id_match.group(1) if job_id_match else None
+
+            # Skip if no valid link or job ID
+            if link == "No Link Available" or not job_id:
+                logging.info(f"Skipping job (no link or job ID) - Title: {title}, Company: {company}")
                 continue
 
             # Check detail page for "Reposted"
@@ -236,7 +246,8 @@ def scrape_linkedin(url):
                 'location': location,
                 'time_posted': time_posted,
                 'link': link,
-                'source': 'LinkedIn'
+                'source': 'LinkedIn',
+                'key': job_id  # Use job ID as the stable identifier
             })
             logging.info(f"Keeping job - Title: {title}, Link: {link}")
         except Exception as e:
@@ -302,13 +313,17 @@ def scrape_github(url):
         
         time_posted = cols[4].text.strip() if cols[4].text.strip() else "Unknown Time"
         
+        # Create a stable key for GitHub jobs (using link since it’s relatively stable)
+        job_key = link
+
         jobs.append({
             'title': title,
             'company': company,
             'location': location,
             'time_posted': time_posted,
             'link': link,
-            'source': 'GitHub'
+            'source': 'GitHub',
+            'key': job_key
         })
     
     logging.info(f"Filtered to {len(jobs)} GitHub jobs with valid links")
@@ -318,7 +333,7 @@ def scrape_simplify(url):
     """Scrape job listings from Simplify.jobs by clicking each card and parsing detail pages."""
     logging.info(f"Scraping Simplify URL: {url}")
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--ignore-certificate-errors")
@@ -383,7 +398,13 @@ def scrape_simplify(url):
                 time_elem = detail_card.find('p', string=lambda s: s and "Confirmed live" in s)
                 time_posted = time_elem.text.strip() if time_elem else "Unknown Time"
                 
-                job_key = f"{title}_{company}_{location}"
+                # Extract job ID from the URL
+                job_id_match = re.search(r'jobId=([a-f0-9\-]+)', job_link)
+                job_id = job_id_match.group(1) if job_id_match else None
+                if not job_id:
+                    logging.warning(f"Could not extract jobId from URL: {job_link}, falling back to composite key")
+                    job_id = f"{title}_{company}_{location}"
+
                 jobs.append({
                     'title': title,
                     'company': company,
@@ -391,7 +412,7 @@ def scrape_simplify(url):
                     'time_posted': time_posted,
                     'link': job_link,
                     'source': 'Simplify',
-                    'key': job_key
+                    'key': job_id  # Use jobId if available, otherwise fall back to composite key
                 })
                 
                 back_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'flex items-center gap-2')]")))
@@ -443,7 +464,8 @@ def main():
         return
     
     seen_jobs = load_seen_jobs()
-    print(f"Loaded {len(seen_jobs)} seen jobs")
+    total_seen = sum(len(ids) for ids in seen_jobs.values())
+    print(f"Loaded {total_seen} seen jobs: { {source: len(ids) for source, ids in seen_jobs.items()} }")
     while True:
         print("Checking for new jobs...")
         all_jobs = []
@@ -466,11 +488,12 @@ def main():
         
         for job in all_jobs:
             job_id = job.get('key', job['link'])
-            if job_id not in seen_jobs:
+            source = job['source'].lower()
+            if job_id not in seen_jobs[source]:
                 print(f"New job found ({job['source']}): {job['title']} - {job['company']} - {job['location']} - {job['time_posted']} - {job['link']}")
                 logging.info(f"New job found ({job['source']}): {job['title']} - {job['company']} - {job['location']} - {job['time_posted']} - {job['link']}")
                 send_discord_notification(job)
-                seen_jobs.add(job_id)
+                seen_jobs[source].add(job_id)
             else:
                 logging.info(f"Job already seen ({job['source']}): {job['title']} - {job['link']}")
         save_seen_jobs(seen_jobs)
