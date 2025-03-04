@@ -95,7 +95,7 @@ def scrape_linkedin(url):
 
     # Set up Selenium with login
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--ignore-certificate-errors")
@@ -118,17 +118,9 @@ def scrape_linkedin(url):
     # Check if we're logged in by looking for the global nav
     logged_in = False
     try:
-        # Refresh the page to ensure cookies are applied
-        driver.refresh()
-        time.sleep(2)  # Wait for redirect to settle
-
-        # Check if redirected to login page
-        if "linkedin.com/login" in driver.current_url:
-            logging.info("Redirected to login page after loading cookies, proceeding to login")
-        else:
-            wait.until(EC.presence_of_element_located((By.ID, "global-nav")))
-            logged_in = True
-            logging.info("Successfully reused cookies, skipped login")
+        wait.until(EC.presence_of_element_located((By.ID, "global-nav")))
+        logged_in = True
+        logging.info("Successfully reused cookies, skipped login")
     except Exception as e:
         logging.info(f"Failed to verify login with cookies: {str(e)}, proceeding to login")
 
@@ -136,16 +128,76 @@ def scrape_linkedin(url):
     if not logged_in:
         try:
             driver.get("https://www.linkedin.com/login")
-            wait.until(EC.presence_of_element_located((By.ID, "username")))
-            driver.find_element(By.ID, "username").send_keys(os.getenv("LINKEDIN_USERNAME"))
-            driver.find_element(By.ID, "password").send_keys(os.getenv("LINKEDIN_PASSWORD"))
-            driver.find_element(By.XPATH, "//button[@type='submit']").click()
+            # Wait for any login field to be clickable (either new or old version)
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@id='session_key' or @id='username']")))
+            
+            # Try the new login page elements first
+            email_field = None
+            password_field = None
+            try:
+                email_field = driver.find_element(By.ID, "session_key")
+                password_field = driver.find_element(By.ID, "session_password")
+                logging.info("Detected new LinkedIn login page (session_key, session_password)")
+            except:
+                # If new elements aren't found, fall back to old elements
+                try:
+                    email_field = driver.find_element(By.ID, "username")
+                    password_field = driver.find_element(By.ID, "password")
+                    logging.info("Detected old LinkedIn login page (username, password)")
+                except Exception as e:
+                    logging.error(f"Failed to find login fields: {str(e)}")
+                    # Save page source for debugging
+                    with open(os.path.join(DEBUG_DIR, "linkedin_login_failed.html"), "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                    driver.quit()
+                    return []
+
+            # Ensure fields are interactable by scrolling, clicking, and using JavaScript
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", email_field)
+                email_field.click()
+                email_field.clear()
+                email_field.send_keys(os.getenv("LINKEDIN_USERNAME"))
+                logging.info("Filled email field using send_keys")
+            except Exception as e:
+                logging.warning(f"send_keys failed for email field: {str(e)}, falling back to JavaScript")
+                driver.execute_script("arguments[0].value = arguments[1];", email_field, os.getenv("LINKEDIN_USERNAME"))
+                driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_field)
+                logging.info("Filled email field using JavaScript")
+
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", password_field)
+                password_field.click()
+                password_field.clear()
+                password_field.send_keys(os.getenv("LINKEDIN_PASSWORD"))
+                logging.info("Filled password field using send_keys")
+            except Exception as e:
+                logging.warning(f"send_keys failed for password field: {str(e)}, falling back to JavaScript")
+                driver.execute_script("arguments[0].value = arguments[1];", password_field, os.getenv("LINKEDIN_PASSWORD"))
+                driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", password_field)
+                logging.info("Filled password field using JavaScript")
+
+            # Find and click the sign-in button
+            try:
+                sign_in_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']")))
+                sign_in_button.click()
+                logging.info("Clicked sign-in button")
+            except Exception as e:
+                logging.warning(f"Failed to click sign-in button with XPath, trying JavaScript click: {str(e)}")
+                sign_in_button = driver.find_element(By.XPATH, "//button[@type='submit']")
+                driver.execute_script("arguments[0].click();", sign_in_button)
+                logging.info("Clicked sign-in button using JavaScript")
+
+            # Wait for login to complete
             wait.until(EC.presence_of_element_located((By.ID, "global-nav")))
             logging.info("Successfully logged into LinkedIn")
             save_cookies(driver, COOKIES_FILE)  # Save cookies after login
             time.sleep(2)
         except Exception as e:
             logging.error(f"Failed to log into LinkedIn: {str(e)}")
+            # Save page source for debugging
+            with open(os.path.join(DEBUG_DIR, "linkedin_login_failed.html"), "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
             driver.quit()
             return []
 
