@@ -9,6 +9,11 @@ venv/
 scraper.log
 debug/
 
+# Ignore LinkedIn cookies file
+data/linkedin_cookies.pkl
+# Ignore seen jobs across machines
+data/seen_jobs.json
+
 # Python cache
 __pycache__/
 *.pyc

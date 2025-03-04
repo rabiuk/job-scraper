@@ -13,6 +13,9 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
+import pickle  # For saving/loading cookies
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, filename="scraper.log", filemode="a",
@@ -47,9 +50,30 @@ CONFIG = {
     }
 }
 SEEN_JOBS_FILE = "data/seen_jobs.json"
+COOKIES_FILE = "data/linkedin_cookies.pkl"  # New file for cookies
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
 DEBUG_DIR = "debug"
+
+def save_cookies(driver, path):
+    """Save cookies to a file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as file:
+        pickle.dump(driver.get_cookies(), file)
+    logging.info(f"Saved cookies to {path}")
+
+def load_cookies(driver, path):
+    """Load cookies from a file and add them to the driver."""
+    try:
+        with open(path, 'rb') as file:
+            cookies = pickle.load(file)
+        for cookie in cookies:
+            driver.add_cookie(cookie)
+        logging.info(f"Loaded cookies from {path}")
+        return True
+    except (FileNotFoundError, pickle.UnpicklingError) as e:
+        logging.warning(f"Failed to load cookies from {path}: {str(e)}")
+        return False
 
 def load_seen_jobs():
     """Load previously seen job links from file."""
@@ -66,50 +90,164 @@ def save_seen_jobs(seen_jobs):
         json.dump(list(seen_jobs), f)
 
 def scrape_linkedin(url):
-    """Scrape job listings from LinkedIn."""
+    """Scrape job listings from LinkedIn, filtering reposts by checking detail pages."""
     logging.info(f"Scraping LinkedIn URL: {url}")
+
+    # Set up Selenium with login
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--ignore-certificate-errors")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--log-level=3")  # Set log level to FATAL
+    chrome_options.add_argument("--enable-unsafe-swiftshader")  # Enable software WebGL to suppress WebGL errors
+    chrome_options.add_argument("--disable-webgl")  # Disable WebGL to suppress WebGL errors
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+    # Set up ChromeDriver service to redirect logs
+    service = Service(ChromeDriverManager().install())
+    service.log_path = "nul"  # Redirect ChromeDriver logs to null (Windows)
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    wait = WebDriverWait(driver, 30)
+
+    # Try loading cookies to avoid login
+    driver.get("https://www.linkedin.com/jobs")  # Navigate to a non-login page first
+    cookies_loaded = load_cookies(driver, COOKIES_FILE)
+
+    # Check if we're logged in by looking for the global nav
+    logged_in = False
     try:
-        response = requests.get(url, headers=HEADERS, timeout=30)
-        response.raise_for_status()
-        logging.info(f"LinkedIn response status: {response.status_code}, length: {len(response.text)}")
+        # Refresh the page to ensure cookies are applied
+        driver.refresh()
+        time.sleep(2)  # Wait for redirect to settle
+
+        # Check if redirected to login page
+        if "linkedin.com/login" in driver.current_url:
+            logging.info("Redirected to login page after loading cookies, proceeding to login")
+        else:
+            wait.until(EC.presence_of_element_located((By.ID, "global-nav")))
+            logged_in = True
+            logging.info("Successfully reused cookies, skipped login")
+    except Exception as e:
+        logging.info(f"Failed to verify login with cookies: {str(e)}, proceeding to login")
+
+    # Login to LinkedIn if cookies didn't work
+    if not logged_in:
+        try:
+            driver.get("https://www.linkedin.com/login")
+            wait.until(EC.presence_of_element_located((By.ID, "username")))
+            driver.find_element(By.ID, "username").send_keys(os.getenv("LINKEDIN_USERNAME"))
+            driver.find_element(By.ID, "password").send_keys(os.getenv("LINKEDIN_PASSWORD"))
+            driver.find_element(By.XPATH, "//button[@type='submit']").click()
+            wait.until(EC.presence_of_element_located((By.ID, "global-nav")))
+            logging.info("Successfully logged into LinkedIn")
+            save_cookies(driver, COOKIES_FILE)  # Save cookies after login
+            time.sleep(2)
+        except Exception as e:
+            logging.error(f"Failed to log into LinkedIn: {str(e)}")
+            driver.quit()
+            return []
+
+    # Load search page with Selenium and scroll the left panel
+    try:
+        driver.get(url)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        try:
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "job-card-container")))
+        except:
+            logging.warning("Job cards not found directly - proceeding with available HTML")
+
+        # Focus on the left panel using Shift+Tab
+        ActionChains(driver).key_down(Keys.SHIFT).send_keys(Keys.TAB).key_up(Keys.SHIFT).perform()
+        logging.info("Focused on the left panel")
+
+        # Scroll to load all job cards using DOWN key
+        for _ in range(80):  # Press DOWN 80 times for smooth scrolling
+            ActionChains(driver).send_keys(Keys.DOWN).perform()
+        time.sleep(2)  # Wait for jobs to load
+
+        search_html = driver.page_source
         
         os.makedirs(DEBUG_DIR, exist_ok=True)
-        with open(os.path.join(DEBUG_DIR, f"linkedin_{url.split('geoId=')[1].split('&')[0]}.html"), "w", encoding="utf-8") as f:
-            f.write(response.text)
-    except requests.RequestException as e:
-        logging.error(f"Failed to fetch LinkedIn URL {url}: {e}")
+        with open(os.path.join(DEBUG_DIR, f"linkedin_search_{url.split('geoId=')[1].split('&')[0]}.html"), "w", encoding="utf-8") as f:
+            f.write(search_html)
+    except Exception as e:
+        logging.error(f"Failed to fetch LinkedIn search page with Selenium: {str(e)}")
+        driver.quit()
         return []
 
-    soup = BeautifulSoup(response.text, 'html.parser')
-    job_cards = soup.find_all('div', class_='job-search-card')
+    soup = BeautifulSoup(search_html, 'html.parser')
+    job_cards = soup.find_all('div', class_=lambda x: x and 'job-card-container' in x)
     logging.info(f"Found {len(job_cards)} LinkedIn job cards")
-    
+
     jobs = []
     for card in job_cards:
-        title_elem = card.find('h3', class_='base-search-card__title')
-        title = title_elem.text.strip() if title_elem else "Unknown Title"
-        
-        company_elem = card.find('h4', class_='base-search-card__subtitle')
-        company = company_elem.text.strip() if company_elem else "Unknown Company"
-        
-        location_elem = card.find('span', class_='job-search-card__location')
-        location = location_elem.text.strip() if location_elem else "Unknown Location"
-        
-        time_elem = card.find('time', class_='job-search-card__listdate--new')
-        time_posted = time_elem.text.strip() if time_elem else "Unknown Time"
-        
-        link_elem = card.find('a', class_='base-card__full-link')
-        link = link_elem['href'] if link_elem and link_elem.get('href') else "No Link Available"
-        
-        jobs.append({
-            'title': title,
-            'company': company,
-            'location': location,
-            'time_posted': time_posted,
-            'link': link,
-            'source': 'LinkedIn'
-        })
-    
+        try:
+            title_elem = card.find('a', class_=lambda x: x and 'job-card-container__link' in x if x else False)
+            title = title_elem.text.strip() if title_elem else "Unknown Title"
+            
+            company_elem = card.find('span', class_=lambda x: x and ('job-card-container__company-name' in x if x else False) or ('NOCEEbNyHzVQXNshVZJTiaELfHeRmUgRpKvpVyUbL' in x if x else False))
+            company = company_elem.text.strip() if company_elem else "Unknown Company"
+            
+            location_elem = card.find('span', class_=lambda x: x and ('job-card-container__metadata-item' in x if x else False) or ('cPJUuquLghphiseYyrIjUxbAZyBEGssGc' in x if x else False))
+            location = location_elem.text.strip() if location_elem else "Unknown Location"
+            
+            time_elem = card.find('time', class_=lambda x: x and 'job-card-container__listed-time' in x if x else False)
+            time_posted = time_elem.text.strip() if time_elem else "Unknown Time"
+            
+            link_elem = card.find('a', class_=lambda x: x and 'job-card-container__link' in x if x else False)
+            link = link_elem['href'] if link_elem and link_elem.get('href') else "No Link Available"
+            if link != "No Link Available" and not link.startswith('http'):
+                link = "https://www.linkedin.com" + link
+
+            # Skip if no valid link
+            if link == "No Link Available":
+                logging.info(f"Skipping job (no link) - Title: {title}, Company: {company}")
+                continue
+
+            # Check detail page for "Reposted"
+            is_reposted = False
+            for attempt in range(3):
+                try:
+                    driver.get(link)
+                    wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    detail_html = driver.page_source
+                    detail_soup = BeautifulSoup(detail_html, 'html.parser')
+                    repost_check = detail_soup.find(string=lambda text: text and "Reposted" in text)
+                    is_reposted = bool(repost_check)
+                    logging.info(f"Detail Page - Title: {title}, Link: {link}, Reposted: {is_reposted}")
+                    break
+                except Exception as e:
+                    logging.warning(f"Attempt {attempt + 1}/3 failed to load detail page for {link}: {str(e)}")
+                    if attempt < 2:
+                        time.sleep(3)
+                        continue
+                    logging.error(f"Failed to verify repost status for {link} after 3 attempts - assuming new: {str(e)}")
+                    is_reposted = False
+
+            if is_reposted:
+                logging.info(f"Skipping reposted job: {title} - {link}")
+                continue
+
+            jobs.append({
+                'title': title,
+                'company': company,
+                'location': location,
+                'time_posted': time_posted,
+                'link': link,
+                'source': 'LinkedIn'
+            })
+            logging.info(f"Keeping job - Title: {title}, Link: {link}")
+        except Exception as e:
+            logging.error(f"Failed to parse job card: {str(e)}")
+            continue
+
+    try:
+        driver.quit()
+    except:
+        logging.warning("Driver quit failed - already closed")
+    logging.info(f"Filtered to {len(jobs)} LinkedIn jobs after repost check")
     return jobs
 
 def scrape_github(url):
@@ -187,13 +325,13 @@ def scrape_simplify(url):
     chrome_options.add_argument("--log-level=3")
     
     service = Service(ChromeDriverManager().install())
-    service.log_path = "nul"  # Suppress ChromeDriver output
+    service.log_path = "nul"
     
     driver = webdriver.Chrome(service=service, options=chrome_options)
     jobs = []
     try:
         driver.get(url)
-        wait = WebDriverWait(driver, 15)  # Increased to 15s
+        wait = WebDriverWait(driver, 15)
         wait.until(EC.presence_of_element_located((By.XPATH, "//div[@data-testid='job-card']")))
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
@@ -320,12 +458,11 @@ def main():
         if not all_jobs:
             print("No jobs found in this run")
         else:
-            # Send separator with current date and time
             timestamp = time.strftime("%b %d, %Y %I:%M %p", time.localtime())
             separator = f"-----------------------------\n**NEW JOB ALERT - {timestamp}**\n______________________________"
             webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=separator)
             webhook.execute()
-            time.sleep(2)  # Delay after separator
+            time.sleep(2)
         
         for job in all_jobs:
             job_id = job.get('key', job['link'])
