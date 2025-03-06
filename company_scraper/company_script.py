@@ -378,11 +378,10 @@ def scrape_google(company, base_url, location):
 # Netflix-specific scraper using Selenium
 def scrape_netflix(company, base_url, location):
     jobs = []
-    seen_urls = set()  # Track seen URLs to avoid duplicates
+    seen_urls = set()
     driver = None
     try:
         chrome_options = Options()
-        # Uncomment for headless mode after testing
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
@@ -397,7 +396,20 @@ def scrape_netflix(company, base_url, location):
         driver.get(base_url)
         logger.info("Successfully loaded initial page")
 
-        # Pagination to load all jobs
+        # Wait for page to stabilize
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        time.sleep(5)  # Buffer for dynamic content
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Check for "no jobs" message
+        no_jobs_message = soup.find("p", class_="heading", string=re.compile("We didn't find any relevant jobs"))
+        if no_jobs_message:
+            logger.info("No jobs found matching the query on Netflix careers page.")
+            return jobs  # Return empty list and exit
+
+        # Proceed with pagination if jobs are present
         logger.info("Starting pagination to load all jobs")
         retry_attempts = 3
         while True:
@@ -452,7 +464,6 @@ def scrape_netflix(company, base_url, location):
         logger.info(f"Found {len(job_items)} job tiles after loading all jobs")
 
         for index, job_item in enumerate(job_items):
-            # Extract basic info from the card
             title_tag = job_item.find("div", class_="position-title")
             if not title_tag:
                 logger.warning(f"Job at index {index} has no title tag")
@@ -514,7 +525,7 @@ def scrape_netflix(company, base_url, location):
                 "location": job_location,
                 "posted_time": posted_time,
                 "found_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "posted_datetime": datetime.now()  # Default to now since posted time is N/A
+                "posted_datetime": datetime.now()
             }
             jobs.append(job_data)
             logger.info(f"Added job {job_title}. Total jobs: {len(jobs)}")
@@ -527,7 +538,6 @@ def scrape_netflix(company, base_url, location):
         if driver:
             driver.quit()
     return jobs
-
 
 # Dictionary mapping companies to their scraping functions
 SCRAPERS = {
