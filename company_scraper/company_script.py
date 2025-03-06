@@ -413,9 +413,6 @@ def scrape_netflix(company, base_url, location):
             job_items = soup.find_all("div", class_=["card", "position-card", "pointer"])
             current_job_count = len(job_items)
             logger.info(f"Current job count: {current_job_count}")
-            if expected_jobs > 0 and current_job_count >= expected_jobs:
-                logger.info(f"Reached expected number of jobs ({current_job_count}/{expected_jobs}). Stopping pagination.")
-                break
 
             # Click "Show More Positions"
             for attempt in range(retry_attempts):
