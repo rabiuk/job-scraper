@@ -50,11 +50,11 @@ CONFIG = {
         "scrape_function": "scrape_simplify"
     }
 }
-SEEN_JOBS_FILE = "data/seen_jobs.json"
-COOKIES_FILE = "data/linkedin_cookies.pkl"  # New file for cookies
+SEEN_JOBS_FILE = "boards_scraper/seen_jobs.json"
+COOKIES_FILE = "boards_scraper/linkedin_cookies.pkl"  # New file for cookies
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-DEBUG_DIR = "debug"
+DEBUG_DIR = "boards_scraper/debug"
 
 def save_cookies(driver, path):
     """Save cookies to a file."""

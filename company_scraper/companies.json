@@ -1,0 +1,17 @@
+[
+  {
+    "Company": "Amazon",
+    "URL": "https://www.amazon.jobs/en/search?offset=0&result_limit=10&sort=recent&country%5B%5D=CAN&country%5B%5D=USA&distanceType=Mi&radius=24km&industry_experience=less_than_1_year&latitude=&longitude=&loc_group_id=&loc_query=&base_query=Software%20Engineer&city=&country=&region=&county=&query_options=&",
+    "Location": "CA/US"
+  },
+  {
+    "Company": "Google",
+    "URL": "https://www.google.com/about/careers/applications/jobs/results/?q=%22Software%20Engineer%22&location=Canada&location=United%20States&target_level=EARLY&degree=BACHELORS&sort_by=date",
+    "Location": "CA/US"
+  },
+  {
+    "Company": "Netflix",
+    "URL": "https://explore.jobs.netflix.net/careers?query=%22new%20graduate%22%20-grad%20-new&domain=netflix.com&sort_by=new&triggerGoButton=false&triggerGoButton=true",
+    "Location": "CA/US"
+  }
+]
