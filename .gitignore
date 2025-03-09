@@ -10,9 +10,8 @@ scraper.log
 debug/
 
 # Ignore LinkedIn cookies file
-data/linkedin_cookies.pkl
-# Ignore seen jobs across machines
-data/seen_jobs.json
+board_scraper/linkedin_cookies.pkl
+
 
 # Python cache
 __pycache__/

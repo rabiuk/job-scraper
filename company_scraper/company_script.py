@@ -596,8 +596,10 @@ def scrape_intuit(company, base_url, location):
                 title = item.find("h2").text.strip() if item.find("h2") else "Unknown Title"
                 job_location = item.find("span", class_="job-location").text.strip() if item.find("span", class_="job-location") else "Unknown Location"
                 category = item.get("data-category", "N/A")
+                link_tag = item.find("a", href=True)
+                job_url = urljoin("https://jobs.intuit.com/", link_tag["href"]) if link_tag else f"https://jobs.intuit.com/job/{job_id}"
                 
-                job = {"job_id": job_id, "title": title, "location": job_location, "category": category}
+                job = {"job_id": job_id, "title": title, "location": job_location, "category": category, "url": job_url}
                 all_jobs.append(job)
             
             if total_pages and page >= total_pages:
@@ -630,7 +632,7 @@ def scrape_intuit(company, base_url, location):
                 job_entry = {
                     "company": company,
                     "job_title": job["title"],
-                    "url": f"https://jobs.intuit.com/job/{job['job_id']}",
+                    "url": job["url"],
                     "location": job["location"],
                     "posted_time": "N/A",  # Intuit HTML doesn’t provide this easily
                     "found_at": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -645,7 +647,6 @@ def scrape_intuit(company, base_url, location):
         return []
     
     return jobs
-
 
 def scrape_microsoft(company, base_url, location):
     jobs = []
@@ -1124,7 +1125,7 @@ def main():
                     logger.info(f"  Found At: {job['found_at']}")
                     logger.info(f"  Posted At: {job['posted_time']}")
                     logger.info("-" * 50)
-                    send_email(job)
+                    # send_email(job)
 
             logger.info(f"Found {new_jobs_count} new jobs for {company_name} in this cycle")
 
