@@ -10,7 +10,7 @@ scraper.log
 debug/
 
 # Ignore LinkedIn cookies file
-board_scraper/linkedin_cookies.pkl
+boards_scraper/linkedin_cookies.pkl
 
 
 # Python cache
