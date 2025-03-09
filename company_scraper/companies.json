@@ -28,5 +28,10 @@
     "Company": "Meta",
     "URL": "https://www.metacareers.com/jobs/?sort_by_new=true&teams[0]=Software%20Engineering&teams[1]=University%20Grad%20-%20Engineering%2C%20Tech%20%26%20Design&roles[0]=Full%20time%20employment",
     "Location": "CA/US"
+  },
+  {
+    "Company": "Apple",
+    "URL": "https://jobs.apple.com/en-us/search?sort=newest&key=Software+Engineer&location=canada-CANC+united-states-USA&team=apps-and-frameworks-SFTWR-AF+machine-learning-and-ai-SFTWR-MCHLN+software-quality-automation-and-tools-SFTWR-SQAT+machine-learning-infrastructure-MLAI-MLI+computer-vision-MLAI-CV+deep-learning-and-reinforcement-learning-MLAI-DLRL+cloud-and-infrastructure-SFTWR-CLD+information-systems-and-technology-SFTWR-ISTECH+wireless-software-SFTWR-WSFT",
+    "Location": "United States"
   }
 ]

@@ -1,15 +1,17 @@
 import json
 import time
+import random
 from bs4 import BeautifulSoup
 import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+import urllib
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import smtplib
 from email.message import EmailMessage
@@ -19,6 +21,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from selenium.webdriver.common.action_chains import ActionChains
 from urllib.parse import urljoin
 import requests
+from utils import extract_min_years, is_entry_level
 
 # Load environment variables from .env
 load_dotenv()
@@ -46,6 +49,14 @@ logger = logging.getLogger(__name__)
 # File paths
 COMPANIES_FILE = "company_scraper/companies.json"
 SEEN_JOBS_FILE = "company_scraper/seen_jobs.json"
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.96 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
+]
 
 # Load companies from JSON
 def load_companies():
@@ -401,166 +412,118 @@ def scrape_google(company, base_url, location):
 
 # Netflix-specific scraper using Selenium
 def scrape_netflix(company, base_url, location):
+    """Scrape Netflix job listings using the API endpoint with pagination."""
     jobs = []
     seen_urls = set()
-    driver = None
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-
-        logger.info("Initializing WebDriver")
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        driver.set_page_load_timeout(30)
-
-        logger.info(f"Navigating to base URL: {base_url}")
-        driver.get(base_url)
-        logger.info("Successfully loaded initial page")
-
-        # Wait for page to stabilize
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        time.sleep(5)  # Buffer for dynamic content
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-
-        # Check for "no jobs" message
-        no_jobs_message = soup.find("p", class_="heading", string=re.compile("We didn't find any relevant jobs"))
-        if no_jobs_message:
-            logger.info("No jobs found matching the query on Netflix careers page.")
-            return jobs  # Return empty list and exit
-
-        # Proceed with pagination if jobs are present
-        logger.info("Starting pagination to load all jobs")
-        retry_attempts = 3
-        while True:
-            time.sleep(3)
-            soup = BeautifulSoup(driver.page_source, "html.parser")
+    
+    # Headers to mimic browser request
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-CA,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Referer": "https://explore.jobs.netflix.net/careers",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    
+    # Parse the base URL to extract query parameters
+    parsed_url = urlparse(base_url)
+    query_params = parse_qs(parsed_url.query)
+    logger.info(f"Scraping Netflix jobs for '{company}' with query: {query_params.get('query', [''])[0]}")
+    
+    # Construct the API base URL and pagination settings
+    api_base = "https://explore.jobs.netflix.net/api/apply/v2/jobs"
+    params = {
+        "domain": "netflix.com",
+        "query": query_params.get("query", [""])[0],
+        "location": query_params.get("location", [""])[0],
+        "Teams": query_params.get("Teams", []),
+        "Work Type": query_params.get("Work Type", []),
+        "Region": query_params.get("Region", []),
+        "sort_by": query_params.get("sort_by", ["new"])[0],
+        "start": 0,
+        "num": 10,  # Number of jobs per page
+    }
+    
+    while True:
+        try:
+            # Make API request
+            api_url = f"{api_base}?{urlencode(params, doseq=True)}"
+            response = requests.get(api_url, headers=headers, timeout=30)
+            response.raise_for_status()
             
-            # Check for end of jobs
-            all_positions_loaded = soup.find("div", class_="all-positions-loaded-div")
-            if all_positions_loaded:
-                logger.info("Found 'No more matching jobs' message. Stopping pagination.")
+            # Parse JSON response
+            data = response.json()
+            positions = data.get("positions", [])
+            total_count = data.get("count", 0)
+            logger.info(f"Fetched {len(positions)} jobs from page starting at {params['start']}, total expected: {total_count}")
+            
+            if not positions:
+                logger.info("No more jobs found, ending pagination")
                 break
-
-            job_items = soup.find_all("div", class_=["card", "position-card", "pointer"])
-            current_job_count = len(job_items)
-            logger.info(f"Current job count: {current_job_count}")
-
-            # Click "Show More Positions"
-            for attempt in range(retry_attempts):
-                try:
-                    cards_container = driver.find_element(By.CLASS_NAME, "position-cards-container")
-                    driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'end'});", cards_container)
-                    time.sleep(1)
-                    show_more_button = driver.find_element(By.CLASS_NAME, "show-more-positions")
-                    driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", show_more_button)
-                    time.sleep(1)
-                    WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CLASS_NAME, "show-more-positions")))
-                    logger.info(f"Attempt {attempt + 1}/{retry_attempts}: Clicking 'Show More Positions'")
-                    ActionChains(driver).move_to_element(show_more_button).click().perform()
-                    WebDriverWait(driver, 30).until(
-                        lambda d: len(d.find_elements(By.CSS_SELECTOR, "div.card.position-card.pointer")) > current_job_count
-                        or d.find_elements(By.CLASS_NAME, "all-positions-loaded-div")
-                    )
-                    time.sleep(5)
-                    break
-                except Exception as e:
-                    logger.warning(f"Attempt {attempt + 1}/{retry_attempts} failed: {e}")
-                    if attempt == retry_attempts - 1:
-                        logger.error("Max retry attempts reached. Stopping pagination.")
-                        break
-                    time.sleep(2)
-            else:
-                break
-
-        # Scroll to top to ensure all cards are accessible
-        logger.info("Scrolling to top before collecting jobs")
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(2)
-
-        # Collect all job cards
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        job_items = soup.find_all("div", class_=["card", "position-card", "pointer"])
-        logger.info(f"Found {len(job_items)} job tiles after loading all jobs")
-
-        for index, job_item in enumerate(job_items):
-            title_tag = job_item.find("div", class_="position-title")
-            if not title_tag:
-                logger.warning(f"Job at index {index} has no title tag")
-                continue
-            job_title = title_tag.text.strip()
-            logger.info(f"Processing job at index {index}: {job_title}")
-
-            card_id = job_item.get("data-test-id", "")
-            if not card_id:
-                logger.warning(f"No data-test-id for job: {job_title}")
-                continue
-            card_index = card_id.replace("position-card-", "")
-            logger.info(f"Card index: {card_index}")
-
-            # Click the card to get the URL
-            try:
-                job_card = driver.find_element(By.CSS_SELECTOR, f"div[data-test-id='position-card-{card_index}']")
-                driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", job_card)
-                time.sleep(1)
-                WebDriverWait(driver, 10).until(EC.element_to_be_clickable(job_card))
-                logger.info(f"Clicking job card for {job_title}")
-                original_url = driver.current_url
-                ActionChains(driver).move_to_element(job_card).click().perform()
-                WebDriverWait(driver, 10).until(lambda d: d.current_url != original_url)
-                time.sleep(2)
-                job_url = driver.current_url
-                logger.info(f"Captured URL for {job_title}: {job_url}")
-            except Exception as e:
-                logger.warning(f"Failed to click card or capture URL for {job_title}: {e}")
-                job_url = "N/A"
-
-            if job_url in seen_urls:
-                logger.info(f"Skipping duplicate job with URL {job_url} for {job_title}")
-                continue
-            seen_urls.add(job_url)
-
-            # Extract location
-            location_tag = job_item.find("p", class_="position-location")
-            job_location = location
-            if location_tag:
-                location_text = location_tag.text.strip()
-                if location_text.startswith("📍"):
-                    location_text = location_text[1:].strip()
-                job_location = location_text
+            
+            # Process each job
+            for job in positions:
+                job_id = job.get("id")
+                if not job_id:
+                    logger.warning("Job missing ID, skipping")
+                    continue
+                
+                job_url = f"https://explore.jobs.netflix.net/careers/job/{job_id}"
+                if job_url in seen_urls:
+                    logger.info(f"Skipping duplicate job with URL {job_url}")
+                    continue
+                seen_urls.add(job_url)
+                
+                locations = job.get("locations", [])
+                job_location = locations[0] if locations else location
                 if "remote" in job_location.lower():
                     job_location = f"Remote - {location}"
-            logger.info(f"Location for {job_title}: {job_location}")
-
-            # Extract department
-            department_tag = job_item.find("span", id=f"position-department-{card_index}")
-            department = department_tag.text.strip() if department_tag else "N/A"
-            logger.info(f"Department for {job_title}: {department}")
-
-            posted_time = "N/A"
-            job_data = {
-                "company": company,
-                "job_title": job_title,
-                "url": job_url,
-                "location": job_location,
-                "posted_time": posted_time,
-                "found_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "posted_datetime": datetime.now()
-            }
-            jobs.append(job_data)
-            logger.info(f"Added job {job_title}. Total jobs: {len(jobs)}")
-
-        logger.info(f"Extracted {len(jobs)} unique jobs from {company}")
-
-    except Exception as e:
-        logger.error(f"Error scraping {company} ({base_url}): {e}")
-    finally:
-        if driver:
-            driver.quit()
+                
+                t_create = job.get("t_create")
+                if t_create:
+                    try:
+                        posted_datetime = datetime.fromtimestamp(t_create)
+                        posted_time = posted_datetime.strftime("%Y-%m-%d")
+                    except ValueError as e:
+                        logger.debug(f"Failed to parse t_create '{t_create}': {e}")
+                        posted_time = "N/A"
+                        posted_datetime = datetime.now()
+                else:
+                    posted_time = "N/A"
+                    posted_datetime = datetime.now()
+                
+                job_entry = {
+                    "company": company,
+                    "job_title": job.get("name", "Unknown Title"),
+                    "url": job_url,
+                    "location": job_location,
+                    "posted_time": posted_time,
+                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "posted_datetime": posted_datetime
+                }
+                jobs.append(job_entry)
+                logger.info(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
+            
+            # Check if we've fetched all jobs
+            if params["start"] + len(positions) >= total_count:
+                logger.info(f"Fetched all {total_count} jobs, ending pagination")
+                break
+            
+            # Move to next page
+            params["start"] += params["num"]
+        
+        except requests.RequestException as e:
+            logger.error(f"Error fetching jobs: {e}")
+            break
+    
+    # Sort jobs by posting date (newest first)
+    jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
+    logger.info(f"Extracted {len(jobs)} unique jobs from {company}")
+    
     return jobs
 
 
@@ -937,6 +900,180 @@ def scrape_meta(company, base_url, location):
     
     return jobs
 
+def scrape_apple(company, base_url, location):
+    jobs = []
+    seen_ids_per_page = {}
+    
+    session = requests.Session()
+    
+    page = 1
+    cutoff_date = datetime.now() - timedelta(days=14)
+    logger.info(f"Cutoff date for jobs: {cutoff_date.strftime('%Y-%m-%d')}")
+    
+    max_retries = 3
+    retry_delay = 10  # Increased from 5 to 10 seconds
+    page_delay = random.uniform(5, 10)  # Random delay between 5-10 seconds
+    
+    parsed_url = urllib.parse.urlparse(base_url)
+    query_params = urllib.parse.parse_qs(parsed_url.query)
+    if "key" in query_params:
+        query_params["key"] = [urllib.parse.unquote(query_params["key"][0])]
+    logger.info(f"Scraping {company} jobs with query: {query_params}")
+    
+    while True:
+        # Rotate User-Agent per page
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://jobs.apple.com/en-us/search",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Cookie": "geo=US; dslang=US-EN; s_cc=true; at_check=true"
+        }
+        session.headers.update(headers)
+        
+        query_params["page"] = [str(page)]
+        query_string = "&".join(f"{k}={urllib.parse.quote(v[0], safe='')}" for k, v in query_params.items())
+        paginated_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{query_string}"
+        logger.debug(f"Fetching {company} page {page} at {paginated_url} with User-Agent: {headers['User-Agent']}")
+        
+        for attempt in range(max_retries):
+            try:
+                response = session.get(paginated_url, timeout=30)
+                response.raise_for_status()
+                break
+            except requests.RequestException as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Attempt {attempt + 1} failed for page {page}: {e}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Error fetching page {page} after {max_retries} attempts: {e}")
+                    if "502" in str(e) or "503" in str(e):
+                        logger.info("Possible rate limit detected. Pausing for 15 minutes before exiting...")
+                        time.sleep(900)  # 15-minute pause
+                    jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
+                    logger.info(f"Extracted {len(jobs)} entry-level jobs from {company}")
+                    return jobs
+        
+        match = re.search(r"window\.APP_STATE\s*=\s*({.*?});", response.text, re.DOTALL)
+        if not match:
+            logger.warning(f"No APP_STATE found on page {page}")
+            break
+        
+        app_state = json.loads(match.group(1))
+        total_jobs = app_state.get("totalRecords", float('inf'))
+        job_list = app_state.get("searchResults", [])
+        
+        if not job_list:
+            logger.info(f"No jobs found on page {page}")
+            break
+        
+        logger.info(f"Found {len(job_list)} jobs on page {page}")
+        previous_total = len(jobs)
+        seen_ids_per_page[page] = set()
+        
+        last_job = job_list[-1]
+        last_posting_date = last_job.get("postingDate", "N/A")
+        if last_posting_date != "N/A":
+            try:
+                last_posted_datetime = datetime.strptime(last_posting_date, "%b %d, %Y")
+                if last_posted_datetime < cutoff_date:
+                    logger.info(f"Page {page} oldest job ({last_job.get('id')}: {last_job.get('postingTitle')}) posted {last_posted_datetime.strftime('%Y-%m-%d')} is before cutoff {cutoff_date.strftime('%Y-%m-%d')}. Stopping.")
+                    break
+            except ValueError:
+                logger.warning(f"Could not parse date for job {last_job.get('id')}: {last_posting_date}")
+        
+        for job in job_list:
+            job_id = job.get("id")
+            if not job_id or job_id in seen_ids_per_page[page]:
+                continue
+            seen_ids_per_page[page].add(job_id)
+            
+            posting_date = job.get("postingDate", "N/A")
+            if posting_date != "N/A":
+                try:
+                    posted_datetime = datetime.strptime(posting_date, "%b %d, %Y")
+                    posted_time = posted_datetime.strftime("%Y-%m-%d")
+                    if posted_datetime < cutoff_date:
+                        logger.debug(f"Skipping job {job_id} ({job.get('postingTitle')}) - Posted {posted_time}, before cutoff")
+                        continue
+                except ValueError:
+                    posted_time = "N/A"
+                    posted_datetime = datetime.now()
+            else:
+                posted_time = "N/A"
+                posted_datetime = datetime.now()
+            
+            detail_url = f"https://jobs.apple.com/api/role/detail/{job_id}?languageCd=en-us"
+            try:
+                detail_response = session.get(detail_url, timeout=10)
+                detail_response.raise_for_status()
+                detail_data = detail_response.json()
+                min_qual = detail_data.get("minimumQualifications", "")
+                pref_qual = detail_data.get("preferredQualifications", "")
+            except requests.RequestException as e:
+                logger.warning(f"Failed to fetch details for job {job_id}: {e}")
+                min_qual = ""
+                pref_qual = ""
+            
+            if not is_entry_level(job, min_qual, pref_qual):
+                years = extract_min_years(min_qual)
+                title = job.get("postingTitle", "").lower()
+                summary = job.get("jobSummary", "").lower()
+                negative_keywords = ["senior", "sr", "staff", "lead", "manager", "principal", "expert", "advanced"]
+                has_negative_title_summary = any(
+                    re.search(rf"\b{kw}\b|\b{kw}\s+.*engineer|\b{kw}\s+.*developer", title + " " + summary)
+                    for kw in negative_keywords
+                )
+                if years > 1:
+                    reason = f"Years: {years}"
+                elif has_negative_title_summary:
+                    reason = "Negative keyword in title/summary"
+                else:
+                    reason = "Other rejection criteria"
+                logger.debug(f"Skipped job: {job.get('postingTitle')} (ID: {job_id}) - Reason: {reason}")
+                continue
+            
+            reason = "No years mentioned" if not extract_min_years(min_qual) else f"Max {extract_min_years(min_qual)} year(s)"
+            logger.info(f"Entry-level job found: {job.get('postingTitle')} (ID: {job_id}) - Reason: {reason}")
+            logger.debug(f"Minimum Qualifications: {min_qual if min_qual else 'Not provided'}")
+            
+            transformed_title = job.get("transformedPostingTitle", job.get("postingTitle", "unknown-title").lower().replace(" ", "-"))
+            job_url = f"https://jobs.apple.com/en-us/details/{job_id}/{transformed_title}"
+            
+            locations = job.get("locations", [])
+            job_location = locations[0].get("name", location) if locations else location
+            if job.get("homeOffice", False):
+                job_location = f"Remote - {job_location}"
+            
+            job_entry = {
+                "company": company,
+                "job_title": job.get("postingTitle", "Unknown Title"),
+                "url": job_url,
+                "location": job_location,
+                "posted_time": posted_time,
+                "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "posted_datetime": posted_datetime,
+                "minimum_qualifications": min_qual
+            }
+            jobs.append(job_entry)
+        
+        logger.info(f"Page {page} added {len(jobs) - previous_total} new jobs, cumulative total: {len(jobs)}")
+        logger.info(f"Total jobs reported by site: {total_jobs}, fetched so far: {len(jobs)}")
+        
+        if len(job_list) < 20 or len(jobs) >= total_jobs:
+            logger.info(f"Stopping at page {page} (fetched: {len(jobs)}, total expected: {total_jobs})")
+            break
+        
+        page += 1
+        logger.info(f"Waiting {page_delay:.2f} seconds before next page...")
+        time.sleep(page_delay)  # Random delay between pages
+    
+    jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
+    logger.info(f"Extracted {len(jobs)} entry-level jobs from {company}")
+    return jobs
 
 SCRAPERS = {
     "Amazon": scrape_amazon,
@@ -945,7 +1082,7 @@ SCRAPERS = {
     "Intuit": scrape_intuit,
     "Microsoft": scrape_microsoft,
     "Meta": scrape_meta,
-
+    "Apple": scrape_apple,
 }
 
 # Main loop
@@ -959,6 +1096,12 @@ def main():
             company_name = company["Company"]
             url = company["URL"]
             location = company["Location"]
+
+            # Add the formatted company search separator
+            logger.info(" " * 50)
+            logger.info("-" * 50)
+            logger.info(f"SEARCHING {company_name.upper()}...")
+            logger.info("-" * 50)
 
             scraper = SCRAPERS.get(company_name)
             if not scraper:
