@@ -1,50 +1,25 @@
-import json
-import time
-import random
-from bs4 import BeautifulSoup
-import logging
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-import urllib
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from datetime import datetime, timedelta
 import re
-import smtplib
-from email.message import EmailMessage
-from dotenv import load_dotenv
-import os
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-from selenium.webdriver.common.action_chains import ActionChains
-from urllib.parse import urljoin
+import time
+import json
+import urllib
+import random
 import requests
-from utils import extract_min_years, is_entry_level
+import logging
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+from setup_enviroment import setup_environment
+from utils import send_email, extract_min_years, is_entry_level, load_companies, load_seen_jobs, save_seen_jobs
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
+from requests_ratelimiter import LimiterSession
 
-# Load environment variables from .env
-load_dotenv()
 
-# Clear the log file at startup
-log_file = "company_scraper/scraper.log"
-with open(log_file, "w") as f:
-    f.write("")
-
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
-)
-# logging.basicConfig(
-#     level=logging.DEBUG,
-#     format="%(asctime)s - %(levelname)s - %(message)s"
-# )
+# Set up environment
+setup_environment() # loads .env stuff, sets python path, and logger level to DEBUG
 logger = logging.getLogger(__name__)
+
+
+# Define a global rate-limited session
+session = LimiterSession(per_second=1, per_host=True) # 1 request per second per domain
 
 # File paths
 COMPANIES_FILE = "company_scraper/companies.json"
@@ -58,124 +33,13 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
 ]
 
-# Load companies from JSON
-def load_companies():
-    try:
-        with open(COMPANIES_FILE, "r") as f:
-            content = f.read().strip()
-            if not content:
-                logger.warning(f"{COMPANIES_FILE} is empty. Starting with empty list.")
-                return []
-            f.seek(0)
-            companies = json.load(f)
-            logger.info(f"Loaded {len(companies)} companies from {COMPANIES_FILE}: {[c['Company'] for c in companies]}")
-            return companies
-    except FileNotFoundError:
-        logger.error(f"{COMPANIES_FILE} not found.")
-        return []
-    except json.JSONDecodeError as e:
-        logger.error(f"{COMPANIES_FILE} contains invalid JSON: {e}")
-        return []
-
-# Load seen jobs from JSON
-def load_seen_jobs():
-    try:
-        with open(SEEN_JOBS_FILE, "r") as f:
-            content = f.read().strip()
-            if not content:
-                logger.warning(f"{SEEN_JOBS_FILE} is empty. Starting with empty dict.")
-                return {}
-            f.seek(0)
-            seen_jobs = json.load(f)
-            logger.info(f"Loaded {len(seen_jobs)} seen jobs from {SEEN_JOBS_FILE}")
-            return seen_jobs
-    except FileNotFoundError:
-        logger.error(f"{SEEN_JOBS_FILE} not found. Creating new empty file.")
-        with open(SEEN_JOBS_FILE, "w") as f:
-            json.dump({}, f)
-        return {}
-    except json.JSONDecodeError as e:
-        logger.error(f"{SEEN_JOBS_FILE} contains invalid JSON: {e}. Resetting to empty dict.")
-        with open(SEEN_JOBS_FILE, "w") as f:
-            json.dump({}, f)
-        return {}
-
-# Save seen jobs to JSON
-def save_seen_jobs(seen_jobs, new_jobs_count):
-    with open(SEEN_JOBS_FILE, "w") as f:
-        json.dump(seen_jobs, f, indent=4)
-    logger.info(f"Persisted seen jobs (including {new_jobs_count} new) to {SEEN_JOBS_FILE}. Total seen: {len(seen_jobs)}")
-
-# Parse posted date to datetime for sorting
-def parse_posted_date(posted_text):
-    try:
-        match = re.search(r"Posted\s+(\w+\s+\d+,\s+\d{4})", posted_text)
-        if match:
-            date_str = match.group(1)
-            date_str = re.sub(r"\s+", " ", date_str).strip()
-            return datetime.strptime(date_str, "%B %d, %Y")
-        logger.debug(f"No date found in posted text: {posted_text}")
-        return datetime.min
-    except Exception as e:
-        logger.debug(f"Could not parse posted date '{posted_text}': {e}")
-        return datetime.min
-
-# Send email alert for a new job
-def send_email(job):
-    try:
-        email_address = os.getenv("EMAIL_ADDRESS")
-        email_password = os.getenv("EMAIL_PASSWORD")
-
-        logger.info(f"Attempting to send email using address: {email_address}")
-
-        if not email_address or not email_password:
-            logger.error("Email credentials not found in .env file")
-            return
-
-        msg = EmailMessage()
-        msg['Subject'] = f"New Job at {job['company']}: {job['job_title']}"
-        msg['From'] = email_address
-        msg['To'] = email_address
-
-        body = f"""Company: {job['company']}
-Job Title: {job['job_title']}
-Location: {job['location']}
-Link: {job['url']}
-Found At: {job['found_at']}
-Posted At: {job['posted_time']}
-"""
-        msg.set_content(body)
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(email_address, email_password)
-            smtp.send_message(msg)
-        logger.info(f"Sent email alert for new job: {job['job_title']} at {job['company']}")
-
-    except Exception as e:
-        logger.error(f"Failed to send email for job {job['job_title']} at {job['company']}: {e}")
-
-# Update URL parameter (e.g., 'offset', 'start', or 'page')
-def update_url_param(url, param_name, param_value):
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
-    query_params[param_name] = [str(param_value)]
-    new_query = urlencode(query_params, doseq=True)
-    return urlunparse((
-        parsed_url.scheme,
-        parsed_url.netloc,
-        parsed_url.path,
-        parsed_url.params,
-        new_query,
-        parsed_url.fragment
-    ))
-
-# Amazon-specific scraper using Selenium
+# Amazon-specific scraper
 def scrape_amazon(company, base_url, location):
     jobs = []
     api_base_url = "https://www.amazon.jobs/en/search.json"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-CA,en;q=0.9",
         "Referer": base_url,
@@ -213,7 +77,7 @@ def scrape_amazon(company, base_url, location):
             params["offset"] = str(offset)
             logger.info(f"Fetching page at offset {offset}")
             
-            response = requests.get(api_base_url, headers=headers, params=params, timeout=30)
+            response = session.get(api_base_url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
@@ -293,7 +157,6 @@ def scrape_amazon(company, base_url, location):
                 break
             
             offset += result_limit
-            time.sleep(2)
         
         jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
         logger.info(f"Extracted {len(jobs)} jobs from {company}")
@@ -305,11 +168,11 @@ def scrape_amazon(company, base_url, location):
     
     return jobs
 
-# Google-specific scraper using Selenium
+# Google-specific scraper
 def scrape_google(company, base_url, location):
     jobs = []
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-CA,en;q=0.9",
     }
@@ -326,7 +189,7 @@ def scrape_google(company, base_url, location):
         logger.info(f"Scraping {company} page {page}")
         
         try:
-            response = requests.get(paginated_url, headers=headers, timeout=30)
+            response = session.get(paginated_url, headers=headers, timeout=30)
             response.raise_for_status()
             
             script_pattern = r"AF_initDataCallback\(({.*?})\);"
@@ -400,7 +263,6 @@ def scrape_google(company, base_url, location):
                 break
             
             page += 1
-            time.sleep(2)
             
         except Exception as e:
             logger.error(f"Error on page {page}: {e}")
@@ -410,7 +272,7 @@ def scrape_google(company, base_url, location):
     logger.info(f"Extracted {len(jobs)} jobs from {company}")
     return jobs
 
-# Netflix-specific scraper using Selenium
+# Netflix-specific scraper
 def scrape_netflix(company, base_url, location):
     """Scrape Netflix job listings using the API endpoint with pagination."""
     jobs = []
@@ -418,7 +280,7 @@ def scrape_netflix(company, base_url, location):
     
     # Headers to mimic browser request
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json",
         "Accept-Language": "en-CA,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -452,7 +314,7 @@ def scrape_netflix(company, base_url, location):
         try:
             # Make API request
             api_url = f"{api_base}?{urlencode(params, doseq=True)}"
-            response = requests.get(api_url, headers=headers, timeout=30)
+            response = session.get(api_url, headers=headers, timeout=30)
             response.raise_for_status()
             
             # Parse JSON response
@@ -526,11 +388,11 @@ def scrape_netflix(company, base_url, location):
     
     return jobs
 
-
+# Intuit-specific scraper
 def scrape_intuit(company, base_url, location):
     """Scrape Intuit job listings and return US/Canada Software Engineering jobs."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://jobs.intuit.com/",
@@ -565,7 +427,7 @@ def scrape_intuit(company, base_url, location):
                 params["glon"] = query_params["glon"][0]
             
             logger.info(f"Fetching page {page}")
-            response = requests.get(api_base_url, headers=headers, params=params, timeout=30)
+            response = session.get(api_base_url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             
@@ -607,7 +469,6 @@ def scrape_intuit(company, base_url, location):
                 break
             
             page += 1
-            time.sleep(2)
         
         logger.info(f"Total unfiltered jobs collected: {len(all_jobs)}")
         
@@ -648,6 +509,7 @@ def scrape_intuit(company, base_url, location):
     
     return jobs
 
+# Microsoft-specific scraper
 def scrape_microsoft(company, base_url, location):
     jobs = []
     
@@ -656,7 +518,7 @@ def scrape_microsoft(company, base_url, location):
     
     # Headers to mimic browser request (from your logs)
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json, text/plain, */*",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-CA,en;q=0.9",
@@ -695,7 +557,7 @@ def scrape_microsoft(company, base_url, location):
             page_size = int(params["pgSz"])
             
             # Send GET request to API
-            response = requests.get(api_url, headers=headers, params=params, timeout=30)
+            response = session.get(api_url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
@@ -758,7 +620,6 @@ def scrape_microsoft(company, base_url, location):
             # Move to next page
             params["pg"] = str(current_page + 1)
             logger.info(f"Moving to page {params['pg']}")
-            time.sleep(2)  # Avoid rate limiting
         
         logger.info(f"Extracted {len(jobs)} jobs from {company}")
         
@@ -769,12 +630,13 @@ def scrape_microsoft(company, base_url, location):
     
     return jobs
 
+# Meta-specific scraper
 def scrape_meta(company, base_url, location):
     """Scrape Meta job listings and filter for University/Grad roles."""
     jobs = []
     url = "https://www.metacareers.com/graphql"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-CA,en;q=0.9",
@@ -855,7 +717,7 @@ def scrape_meta(company, base_url, location):
 
     try:
         logger.info(f"Making GraphQL request to {url}")
-        response = requests.post(url, headers=headers, data=payload, timeout=30)
+        response = session.post(url, headers=headers, data=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
         job_data = data.get("data", {}).get("job_search_with_featured_jobs", {}).get("all_jobs", [])
@@ -901,11 +763,10 @@ def scrape_meta(company, base_url, location):
     
     return jobs
 
+# Apple-specific scraper
 def scrape_apple(company, base_url, location):
     jobs = []
     seen_ids_per_page = {}
-    
-    session = requests.Session()
     
     page = 1
     cutoff_date = datetime.now() - timedelta(days=14)
@@ -913,7 +774,6 @@ def scrape_apple(company, base_url, location):
     
     max_retries = 3
     retry_delay = 10  # Increased from 5 to 10 seconds
-    page_delay = random.uniform(5, 10)  # Random delay between 5-10 seconds
     
     parsed_url = urllib.parse.urlparse(base_url)
     query_params = urllib.parse.parse_qs(parsed_url.query)
@@ -1069,8 +929,6 @@ def scrape_apple(company, base_url, location):
             break
         
         page += 1
-        logger.info(f"Waiting {page_delay:.2f} seconds before next page...")
-        time.sleep(page_delay)  # Random delay between pages
     
     jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
     logger.info(f"Extracted {len(jobs)} entry-level jobs from {company}")
@@ -1125,7 +983,7 @@ def main():
                     logger.info(f"  Found At: {job['found_at']}")
                     logger.info(f"  Posted At: {job['posted_time']}")
                     logger.info("-" * 50)
-                    # send_email(job)
+                    send_email(job)
 
             logger.info(f"Found {new_jobs_count} new jobs for {company_name} in this cycle")
 

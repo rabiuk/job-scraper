@@ -1,0 +1,22 @@
+[
+  {
+    "board": "Simplify",
+    "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=United%20States&country=United%20States&experience=Entry%20Level%2FNew%20Grad&mostRecent=true",
+    "Location": "United States"
+  },
+  {
+    "board": "Simplify",
+    "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=Canada&country=Canada&experience=Entry%20Level%2FNew%20Grad&mostRecent=true",
+    "Location": "Canada"
+  },
+  {
+    "board": "Simplify",
+    "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=Remote%20in%20USA&experience=Entry%20Level%2FNew%20Grad&mostRecent=true&jobId=1a00012f-0e25-4386-a7ce-4ecebf8fa406",
+    "Location": "Remote US"
+  },
+  {
+    "board": "Simplify",
+    "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=Remote%20in%20Canada&experience=Entry%20Level%2FNew%20Grad&mostRecent=true&jobId=8af89527-71b7-4064-b5a4-ae764f672c54",
+    "Location": "Remote Canada"
+  }
+]

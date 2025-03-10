@@ -1,8 +1,10 @@
-from discord_webhook import DiscordWebhook
 import os
-from dotenv import load_dotenv
+from discord_webhook import DiscordWebhook
+from setup_enviroment import setup_environment
 
-load_dotenv()
+# Setup environment
+setup_environment()
+
 url = os.getenv("DISCORD_WEBHOOK_URL")
 print(f"Using URL: {url}")
 webhook = DiscordWebhook(url=url, content="Test message")

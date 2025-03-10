@@ -98,7 +98,7 @@ Or copy the project to `C:\Users\Kenny\Documents\Projects\JOB-SCRAPER\`.
 
      # Company Scraper (Email)
      EMAIL_ADDRESS=your.email@gmail.com
-     EMAIL_PASSWORD=your-app-password
+     EMAIL_APP_PASSWORD=your-app-password
      ```
 
    - **Discord Webhook**: In Discord → Channel Settings → Integrations → Webhooks → New Webhook → Copy URL.
