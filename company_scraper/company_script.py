@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # Define a global rate-limited session
-session = LimiterSession(per_second=1, per_host=True) # 1 request per second per domain
+session = LimiterSession(per_second=0.5, per_host=True) # 1 request every 2 secs per domain
 
 # File paths
 COMPANIES_FILE = "company_scraper/companies.json"
@@ -490,18 +490,28 @@ def scrape_intuit(company, base_url, location):
         now = datetime.now()
         for job in us_ca_jobs:
             if job["category"] == "Software Engineering":
-                job_entry = {
-                    "company": company,
-                    "job_title": job["title"],
-                    "url": job["url"],
-                    "location": job["location"],
-                    "posted_time": "N/A",  # Intuit HTML doesn’t provide this easily
-                    "found_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_datetime": now
+                mock_job = {
+                    "postingTitle": job["title"],
+                    "jobSummary": ""  # Intuit doesn't provide summaries
                 }
-                jobs.append(job_entry)
+
+                # Check if entry level using title only
+                if is_entry_level(mock_job, "", ""):  # Empty min/pref qual
+                    job_entry = {
+                        "company": company,
+                        "job_title": job["title"],
+                        "url": job["url"],
+                        "location": job["location"],
+                        "posted_time": "N/A",  # Intuit HTML doesn’t provide this easily
+                        "found_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "posted_datetime": now
+                    }
+                    jobs.append(job_entry)
+                    logger.info(f"Added entry-level job: {job['title']}")
+                else:
+                    logger.debug(f"Skipped non-entry-level position: {job['title']}")
         
-        logger.info(f"Total US/Canada Software Engineering jobs: {len(jobs)}")
+        logger.info(f"Final US/Canada Software Engineering entry-level jobs: {len(jobs)}")
         
     except Exception as e:
         logger.error(f"Error scraping {company}: {e}")

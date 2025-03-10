@@ -86,68 +86,65 @@ def is_entry_level(job, min_qual, pref_qual):
     pref_qual = pref_qual.lower() if pref_qual else ""
 
     # Define positive and negative indicators
-    positive_keywords = ["junior", "associate"]  # Only unambiguous single words
+    positive_keywords = ["junior", "associate"]
     positive_phrases = [
         "entry level", "entry-level", "new grad", "recent graduate", "early career",
         "internship experience", "student", "beginner"
     ]
-    negative_keywords = ["senior", "sr", "staff", "lead", "manager", "principal", "expert", "advanced"]
+    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "advanced"]
 
-    # Check title and summary
-    has_positive_title_summary = any(
-        re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', summary)
-        for kw in positive_keywords
-    ) or any(
-        phrase in title or phrase in summary for phrase in positive_phrases
-    )
-    has_negative_title_summary = any(
-        re.search(rf'\b{kw}\b', title + " " + summary) 
+    # Combine all text fields for negative keyword checks
+    combined_text = f"{title} {summary} {min_qual} {pref_qual}"
+
+    # Check for negative keywords
+    has_negative_keywords = any(
+        re.search(rf'\b{kw}\b', combined_text) 
         for kw in negative_keywords
     )
 
-    logger.debug(f"Title: {title}")
-    logger.debug(f"Summary: {summary}")
-    logger.debug(f"Has positive keywords: {has_positive_title_summary}")
-    logger.debug(f"Has negative keywords: {has_negative_title_summary} (matched: {[kw for kw in negative_keywords if re.search(rf'\b{kw}\b', title + ' ' + summary)]})")
-
-    if has_negative_title_summary:
-        logger.debug("Rejected due to negative keywords in title/summary")
+    if has_negative_keywords:
+        logger.debug("Rejected due to negative keywords")
         return False
-    if has_positive_title_summary:
-        logger.debug("Accepted due to positive keywords/phrases in title/summary")
-        return True
 
-    # Check qualifications
-    has_positive_qual = any(
-        re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual)
-        for kw in positive_keywords
-    ) or any(
-        phrase in min_qual or phrase in pref_qual for phrase in positive_phrases
+    # Check title/summary for positive indicators
+    has_positive_title_summary = (
+        any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', summary) for kw in positive_keywords)
+        or any(phrase in title or phrase in summary for phrase in positive_phrases)
     )
-    
-    matched_keywords = [kw for kw in positive_keywords if re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual)]
-    matched_phrases = [phrase for phrase in positive_phrases if phrase in min_qual or phrase in pref_qual]
-    if has_positive_qual:
-        logger.debug(f"Accepted due to positive keywords/phrases in qualifications: {matched_keywords + matched_phrases}")
+    if has_positive_title_summary:
+        logger.debug("Accepted due to positive title/summary")
         return True
 
-    # Check experience requirement
-    if min_qual:
-        min_years = extract_min_years(min_qual)
-        logger.debug(f"Min years extracted: {min_years}")
-        has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', min_qual))
-        if has_zero_start_range:
-            logger.debug("Found range starting at 0, accepting as entry-level")
-            return True
-        if min_years > 1:
-            logger.debug(f"Rejecting: {min_years} years exceeds 0-1 threshold")
-            return False
-        if min_years in (0, 1):
-            logger.debug(f"Accepting: {min_years} years within 0-1 threshold")
-            return True
+    # Check experience requirements FIRST
+    combined_quals = f"{min_qual} {pref_qual}"
+    min_years = extract_min_years(combined_quals) if combined_quals else 0
+    has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_quals))
 
-    logger.debug("No specific years or keywords, defaulting to no negative keywords check")
-    return not has_negative_title_summary
+    logger.debug(f"Min years: {min_years}, Zero start: {has_zero_start_range}")
+
+    # Experience-based decisions
+    if has_zero_start_range:
+        logger.debug("Accepted: Range starts at 0")
+        return True
+    if min_years > 1:
+        logger.debug(f"Rejected: {min_years} years exceeds threshold")
+        return False
+    if min_years in (0, 1):
+        logger.debug(f"Accepted: {min_years} years within threshold")
+        return True
+
+    # Check qualifications for positive indicators LAST
+    has_positive_qual = (
+        any(re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual) for kw in positive_keywords)
+        or any(phrase in min_qual or phrase in pref_qual for phrase in positive_phrases)
+    )
+    if has_positive_qual:
+        logger.debug("Accepted due to positive qualifications")
+        return True
+
+    # Final fallback
+    logger.debug("Defaulting to no negative keywords check")
+    return not has_negative_keywords
 
 # Load board URLs from JSON
 def load_board_urls(board_urls_file="company_scraper/board_urls.json"):

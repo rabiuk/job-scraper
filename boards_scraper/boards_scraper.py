@@ -5,11 +5,12 @@ import aiohttp  # For async Discord webhook requests
 import logging
 import asyncio
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 from requests_ratelimiter import LimiterSession
 from utils import send_discord_message, load_board_urls, load_seen_jobs, save_seen_jobs
 from setup_enviroment import setup_environment
+from zoneinfo import ZoneInfo
 
 
 # Set up environment
@@ -21,12 +22,27 @@ logger = logging.getLogger(__name__)
 # Session with rate limiting (assuming this is set up)
 session = LimiterSession(per_second=1)
 
+EST = ZoneInfo("America/New_York")
+
 # File paths (adjust as needed)
 BOARD_URLS_FILE = "boards_scraper/board_urls.json"
 SEEN_JOBS_FILE = "boards_scraper/seen_jobs.json"
 
 # Discord webhook URL (replace with your actual webhook URL or load from env/config)
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+
+def convert_to_est(utc_timestamp):
+    """Convert UTC timestamp to EST datetime string"""
+    if utc_timestamp == "N/A":
+        return "N/A"
+    utc_time = datetime.utcfromtimestamp(utc_timestamp).replace(tzinfo=timezone.utc)
+    est_time = utc_time.astimezone(EST)
+    return est_time.strftime("%Y-%m-%d %H:%M:%S EST")
+
+def get_current_est_time():
+    """Get current time in EST as formatted string"""
+    return datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S EST")
+
 
 def scrape_simplify(board, base_url):
     """Scrape Simplify.jobs using the Typesense API with dynamic params for countries or locations."""
@@ -108,7 +124,7 @@ def scrape_simplify(board, base_url):
             if "hits" in result:
                 total_found = result["found"]
                 hits = result["hits"]
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                current_time = get_current_est_time() # Grab current est time
                 for hit in hits:
                     doc = hit["document"]
                     updated_date = doc.get("updated_date", "N/A")
@@ -121,11 +137,10 @@ def scrape_simplify(board, base_url):
                     job_title = doc.get("title", "Unknown-Title").replace(" ", "-").lower()
                     simplify_url = f"https://simplify.jobs/p/{job_id}/{job_title}"
                     
-                    posted_time = (datetime.utcfromtimestamp(updated_date).strftime("%Y-%m-%d %H:%M:%S UTC")
-                                 if updated_date != "N/A" else "N/A")
+                    # Convert timestamps to EST
+                    posted_time = convert_to_est(updated_date) if updated_date != "N/A" else "N/A"
                     start_date = doc.get("start_date", "N/A")
-                    start_time = (datetime.utcfromtimestamp(start_date).strftime("%Y-%m-%d %H:%M:%S UTC")
-                                 if start_date != "N/A" else "N/A")
+                    start_time = convert_to_est(start_date) if start_date != "N/A" else "N/A"
                     
                     job = {
                         "job_title": doc.get("title", "Unknown Title"),
@@ -135,7 +150,7 @@ def scrape_simplify(board, base_url):
                         "found_at": current_time,
                         "posted_time": posted_time,
                         "start_time": start_time,
-                        "key": f"{board}_{filter_value}_{simplify_url}"
+                        "key": simplify_url
                     }
                     if job["key"] not in [j["key"] for j in jobs]:
                         jobs.append(job)
@@ -170,11 +185,10 @@ def main():
 
     while True:
         logger.info("Starting new job check cycle...")
-        cycle_start_message = "-----\n✨ Job Alert ✨\n-----"
-        loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message))
         
         total_new_jobs = 0
         cycle_jobs = set()
+        new_jobs_to_send = []  # Store new jobs to send after the "Job Alert" message
 
         for board in boards:
             board_name = board["board"]
@@ -215,24 +229,36 @@ def main():
                     logger.info(f"  Key: {job_key}")
                     logger.info("-" * 50)
                     
-                    # Send to Discord with retry
-                    discord_message = (
-                        f"-----\n"
-                        f"New job #{new_jobs_count} at {job['company']}:\n"
-                        f"  Job Title: {job['job_title']}\n"
-                        f"  Location: {job['location']}\n"
-                        f"  Link: {job['url']}\n"
-                        f"  Found At: {job['found_at']}\n"
-                        f"  Posted At: {job['posted_time']}\n"
-                        f"  Start At: {job['start_time']}\n"
-                        f"  Key: {job_key}\n"
-                        f"-----"
-                    )
-                    loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, discord_message))
+                    # Store the job for later sending
+                    new_jobs_to_send.append(job)
                 else:
                     logger.debug(f"Job already seen in cycle or previous cycles: {job_key}")
 
             logger.info(f"Found {new_jobs_count} new jobs for {board_name} - {location} in this cycle")
+
+        # Send the "Job Alert" message first if there are new jobs
+        if total_new_jobs > 0:
+            cycle_start_message = (
+                f"---------------\n"
+                f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨\n"
+                f"--"
+            )
+            loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message))
+
+            # Send individual job messages
+            for job in new_jobs_to_send:
+                discord_message = (
+                    f"-----\n"
+                    f"New job at {job['company']}:\n"
+                    f"  Job Title: {job['job_title']}\n"
+                    f"  Location: {job['location']}\n"
+                    f"  Link: {job['url']}\n"
+                    f"  Found At: {job['found_at']}\n"
+                    f"  Posted At: {job['posted_time']}\n"
+                    f"  Start At: {job['start_time']}\n"
+                    f"-----"
+                )
+                loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, discord_message))
 
         logger.info(f"Cycle completed. Total new jobs found across all boards: {total_new_jobs}")
         save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
