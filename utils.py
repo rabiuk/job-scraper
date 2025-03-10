@@ -4,6 +4,7 @@ import json
 import smtplib
 import logging
 import aiohttp  # For async Discord webhook requests
+import asyncio
 from email.message import EmailMessage
 
 logger = logging.getLogger(__name__)
