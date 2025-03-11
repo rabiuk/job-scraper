@@ -177,7 +177,7 @@ def scrape_simplify(board, base_url):
 
 SCRAPERS = {"Simplify": scrape_simplify}
 
-def main():
+async def main():
     boards = load_board_urls(BOARD_URLS_FILE)
     seen_jobs = load_seen_jobs(SEEN_JOBS_FILE)
 
@@ -244,6 +244,7 @@ def main():
                 f"--"
             )
             loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message))
+            await asyncio.sleep(1)  # Wait 1 second after the alert
 
             # Send individual job messages
             for job in new_jobs_to_send:
@@ -259,6 +260,7 @@ def main():
                     f"-----"
                 )
                 loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, discord_message))
+                await asyncio.sleep(1)  # Wait 1 second after the alert
 
         logger.info(f"Cycle completed. Total new jobs found across all boards: {total_new_jobs}")
         save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
