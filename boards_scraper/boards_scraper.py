@@ -12,14 +12,12 @@ from utils import send_discord_message, load_board_urls, load_seen_jobs, save_se
 from setup_enviroment import setup_environment
 from zoneinfo import ZoneInfo
 
-
 # Set up environment
 setup_environment()
 
-
 logger = logging.getLogger(__name__)
 
-# Session with rate limiting (assuming this is set up)
+# Session with rate limiting
 session = LimiterSession(per_second=1)
 
 EST = ZoneInfo("America/New_York")
@@ -28,7 +26,7 @@ EST = ZoneInfo("America/New_York")
 BOARD_URLS_FILE = "boards_scraper/board_urls.json"
 SEEN_JOBS_FILE = "boards_scraper/seen_jobs.json"
 
-# Discord webhook URL (replace with your actual webhook URL or load from env/config)
+# Discord webhook URL (loaded from environment)
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def convert_to_est(utc_timestamp):
@@ -42,7 +40,6 @@ def convert_to_est(utc_timestamp):
 def get_current_est_time():
     """Get current time in EST as formatted string"""
     return datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S EST")
-
 
 def scrape_simplify(board, base_url):
     """Scrape Simplify.jobs using the Typesense API with dynamic params for countries or locations."""
@@ -124,7 +121,7 @@ def scrape_simplify(board, base_url):
             if "hits" in result:
                 total_found = result["found"]
                 hits = result["hits"]
-                current_time = get_current_est_time() # Grab current est time
+                current_time = get_current_est_time()
                 for hit in hits:
                     doc = hit["document"]
                     updated_date = doc.get("updated_date", "N/A")
@@ -137,7 +134,6 @@ def scrape_simplify(board, base_url):
                     job_title = doc.get("title", "Unknown-Title").replace(" ", "-").lower()
                     simplify_url = f"https://simplify.jobs/p/{job_id}/{job_title}"
                     
-                    # Convert timestamps to EST
                     posted_time = convert_to_est(updated_date) if updated_date != "N/A" else "N/A"
                     start_date = doc.get("start_date", "N/A")
                     start_time = convert_to_est(start_date) if start_date != "N/A" else "N/A"
@@ -181,14 +177,12 @@ async def main():
     boards = load_board_urls(BOARD_URLS_FILE)
     seen_jobs = load_seen_jobs(SEEN_JOBS_FILE)
 
-    loop = asyncio.get_event_loop()
-
     while True:
         logger.info("Starting new job check cycle...")
         
         total_new_jobs = 0
         cycle_jobs = set()
-        new_jobs_to_send = []  # Store new jobs to send after the "Job Alert" message
+        new_jobs_to_send = []
 
         for board in boards:
             board_name = board["board"]
@@ -218,7 +212,6 @@ async def main():
                     cycle_jobs.add(job_url)
                     seen_jobs[job_key] = job["found_at"]
                     
-                    # Log to console
                     logger.info(f"New job #{new_jobs_count} at {job['company']}:")
                     logger.info(f"  Job Title: {job['job_title']}")
                     logger.info(f"  Location: {job['location']}")
@@ -229,7 +222,6 @@ async def main():
                     logger.info(f"  Key: {job_key}")
                     logger.info("-" * 50)
                     
-                    # Store the job for later sending
                     new_jobs_to_send.append(job)
                 else:
                     logger.debug(f"Job already seen in cycle or previous cycles: {job_key}")
@@ -243,7 +235,7 @@ async def main():
                 f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨\n"
                 f"--"
             )
-            loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message))
+            await send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message)
             await asyncio.sleep(1)  # Wait 1 second after the alert
 
             # Send individual job messages
@@ -259,13 +251,13 @@ async def main():
                     f"  Start At: {job['start_time']}\n"
                     f"-----"
                 )
-                loop.run_until_complete(send_discord_message(DISCORD_WEBHOOK_URL, discord_message))
-                await asyncio.sleep(1)  # Wait 1 second after the alert
+                await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
+                await asyncio.sleep(1)  # Wait 1 second between messages
 
         logger.info(f"Cycle completed. Total new jobs found across all boards: {total_new_jobs}")
         save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
         logger.info("Waiting 30 mins before next check...")
-        time.sleep(30 * 60)
+        await asyncio.sleep(30 * 60)  # Use asyncio.sleep for async compatibility
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
