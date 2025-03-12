@@ -92,7 +92,7 @@ def is_entry_level(job, min_qual, pref_qual):
         "entry level", "entry-level", "new grad", "recent graduate", "early career",
         "internship experience", "student", "beginner"
     ]
-    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "advanced"]
+    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "advanced", "vp", "director", "chief", "phd"]
 
     # Combine all text fields for negative keyword checks
     combined_text = f"{title} {summary} {min_qual} {pref_qual}"

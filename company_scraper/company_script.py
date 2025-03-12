@@ -944,6 +944,160 @@ def scrape_apple(company, base_url, location):
     logger.info(f"Extracted {len(jobs)} entry-level jobs from {company}")
     return jobs
 
+def scrape_uber(company, base_url, location):
+    """Scrape Uber job listings using their API endpoint with pagination, filtering for entry-level roles."""
+    jobs = []
+    api_url = "https://www.uber.com/api/loadSearchJobsResults?localeCode=en"
+    
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-CA,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://www.uber.com",
+        "Referer": base_url,
+        "x-csrf-token": "x",  # Placeholder; might need dynamic handling if required
+        "x-uber-sites-page-edge-cache-enabled": "true",
+    }
+    
+    # Parse the base URL
+    parsed_url = urlparse(base_url)
+    query_params = parse_qs(parsed_url.query)
+    
+    # Extract query
+    query = query_params.get("query", ["Software Engineer"])[0]
+    
+    # Extract departments
+    departments = query_params.get("department", ["Engineering"])
+    
+    # Extract locations
+    locations_raw = query_params.get("location", [])
+    locations = []
+    for loc in locations_raw:
+        parts = loc.split("-")
+        if len(parts) >= 3:
+            country = parts[0]
+            region = parts[1]
+            city = "-".join(parts[2:])  # Handle multi-part city names
+            locations.append({"country": country, "region": region, "city": city})
+    
+    # Extract teams (optional)
+    teams = query_params.get("team", [])
+    
+    # Extract line of business (optional)
+    line_of_business = query_params.get("lineOfBusinessName", [])
+    
+    # Build payload dynamically
+    payload = {
+        "limit": 10,
+        "page": 0,
+        "params": {
+            "query": query,
+            "department": departments,
+            "location": locations if locations else [{"country": "USA", "region": "", "city": location}],
+        }
+    }
+    if teams:
+        payload["params"]["team"] = teams
+    if line_of_business:
+        payload["params"]["lineOfBusinessName"] = line_of_business
+    
+    logger.info(f"Scraping {company} jobs with query: {query}, locations: {len(locations)}")
+    
+    try:
+        while True:
+            logger.info(f"Fetching page {payload['page']}")
+            response = session.post(api_url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("status") != "success":
+                logger.error(f"API returned non-success status: {data.get('status')}")
+                break
+            
+            results = data.get("data", {}).get("results", [])
+            total_results = data.get("data", {}).get("totalResults", {}).get("low", 0)
+            logger.info(f"Found {len(results)} jobs on page {payload['page']}, total expected: {total_results}")
+            
+            if not results:
+                logger.info(f"No more jobs on page {payload['page']}")
+                break
+            
+            for job in results:
+                job_id = job.get("id")
+                if not job_id:
+                    logger.warning("Job missing ID, skipping")
+                    continue
+                
+                job_title = job.get("title", "Unknown Title")
+                job_description = job.get("description", "")
+                
+                # Mock job entry for is_entry_level check
+                mock_job = {
+                    "postingTitle": job_title,
+                    "jobSummary": job_description
+                }
+                
+                # Check if the job is entry-level
+                if not is_entry_level(mock_job, "", ""):  # No min/pref quals available
+                    logger.debug(f"Skipped non-entry-level job: {job_title}")
+                    continue
+                
+                job_url = f"https://www.uber.com/us/en/careers/list/{job_id}/"
+                
+                # Primary location
+                primary_location = job.get("location", {})
+                job_location = f"{primary_location.get('city', '')}, {primary_location.get('region', '')}, {primary_location.get('countryName', location)}".strip(", ")
+                
+                # Check all locations for remote status
+                all_locations = job.get("allLocations", [])
+                if any("remote" in loc.get("city", "").lower() or "remote" in loc.get("region", "").lower() for loc in all_locations):
+                    job_location = f"Remote - {job_location}"
+                
+                # Parse creation date
+                creation_date = job.get("creationDate", "N/A")
+                if creation_date != "N/A":
+                    try:
+                        posted_datetime = datetime.strptime(creation_date, "%Y-%m-%dT%H:%M:%S.000Z")
+                        posted_time = posted_datetime.strftime("%Y-%m-%d")
+                    except ValueError as e:
+                        logger.debug(f"Failed to parse creationDate '{creation_date}': {e}")
+                        posted_time = "N/A"
+                        posted_datetime = datetime.now()
+                else:
+                    posted_time = "N/A"
+                    posted_datetime = datetime.now()
+                
+                job_entry = {
+                    "company": company,
+                    "job_title": job_title,
+                    "url": job_url,
+                    "location": job_location,
+                    "posted_time": posted_time,
+                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "posted_datetime": posted_datetime
+                }
+                jobs.append(job_entry)
+                logger.info(f"Added entry-level job: {job_title} at {job_location}")
+            
+            if len(jobs) >= total_results or len(results) < payload["limit"]:
+                logger.info(f"Reached end of jobs (extracted {len(jobs)} of {total_results})")
+                break
+            
+            payload["page"] += 1
+        
+        jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
+        logger.info(f"Extracted {len(jobs)} entry-level jobs from {company}")
+    
+    except Exception as e:
+        logger.error(f"Error scraping {company}: {e}")
+        if "response" in locals():
+            logger.debug(f"Response: {response.text[:500]}...")
+    
+    return jobs
+
+
 SCRAPERS = {
     "Amazon": scrape_amazon,
     "Google": scrape_google,
@@ -952,6 +1106,7 @@ SCRAPERS = {
     "Microsoft": scrape_microsoft,
     "Meta": scrape_meta,
     "Apple": scrape_apple,
+    "Uber": scrape_uber,
 }
 
 # Main loop
