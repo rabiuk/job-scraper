@@ -4,8 +4,10 @@ import time
 import json
 import urllib
 import random
+import brotli
 import requests
 import logging
+import zstandard as zstd
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from setup_environment import setup_environment
@@ -614,8 +616,10 @@ def scrape_microsoft(company, base_url, location):
     return jobs
 
 # Meta-specific scraper
+import zstandard as zstd
+import json
+
 def scrape_meta(company, base_url, location):
-    """Scrape Meta job listings and filter for University/Grad roles."""
     jobs = []
     url = "https://www.metacareers.com/graphql"
     headers = {
@@ -630,15 +634,16 @@ def scrape_meta(company, base_url, location):
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
         "X-FB-Friendly-Name": "CareersJobSearchResultsDataQuery",
-        "X-FB-LSD": "AVrqx8rmwwE",
+        "X-FB-LSD": "AVrqx8rmwwE",  # Consider fetching dynamically if needed
         "X-ASBD-ID": "359341",
     }
     
-    # Parse URL parameters
+    session = requests.Session()
+    session.headers.update(headers)
+    
     parsed_url = urlparse(base_url)
     query_params = parse_qs(parsed_url.query)
     
-    # Function to extract array parameters with index syntax
     def extract_array_param(params, param_name):
         pattern = re.compile(rf"^{re.escape(param_name)}\[\d+\]$", re.IGNORECASE)
         values = []
@@ -647,19 +652,16 @@ def scrape_meta(company, base_url, location):
                 values.extend(params[key])
         return values
     
-    # Extract parameters
     teams = extract_array_param(query_params, 'teams')
     roles = extract_array_param(query_params, 'roles')
     divisions = extract_array_param(query_params, 'divisions')
     offices = extract_array_param(query_params, 'offices')
     
-    # Log parsed parameters
     logger.info(f"Parsed teams: {teams}")
     logger.info(f"Parsed roles: {roles}")
     logger.info(f"Parsed divisions: {divisions}")
     logger.info(f"Parsed offices: {offices}")
     
-    # Build GraphQL variables
     graphql_vars = {
         "search_input": {
             "q": query_params.get('q', [None])[0],
@@ -700,28 +702,52 @@ def scrape_meta(company, base_url, location):
 
     try:
         logger.info(f"Making GraphQL request to {url}")
-        response = session.post(url, headers=headers, data=payload, timeout=30)
+        response = session.post(url, data=payload, timeout=60)  # Increased timeout
         response.raise_for_status()
-        data = response.json()
+        
+        # Log response details
+        logger.debug(f"Response headers: {response.headers}")
+        logger.debug(f"Raw response length: {len(response.content)} bytes")
+        
+        # Handle zstd decompression
+        if response.headers.get("Content-Encoding") == "zstd":
+            logger.debug("Decompressing zstd-encoded response")
+            try:
+                decompressed = zstd.decompress(response.content)
+                data_str = decompressed.decode("utf-8")
+                logger.debug(f"Decompressed response (first 500 chars): {data_str[:500]}")
+                data = json.loads(data_str)
+            except zstd.ZstdError as e:
+                logger.error(f"Zstd decompression failed: {e}")
+                # Attempt to parse raw content as JSON in case it's not actually zstd
+                try:
+                    data = json.loads(response.content.decode("utf-8"))
+                    logger.debug("Parsed raw content as JSON despite zstd header")
+                except json.JSONDecodeError as je:
+                    logger.error(f"Failed to parse raw content as JSON: {je}")
+                    return jobs
+        else:
+            logger.debug("Raw response content (first 500 chars): {response.content[:500]}")
+            data = response.json()
+        
+        # Extract jobs
         job_data = data.get("data", {}).get("job_search_with_featured_jobs", {}).get("all_jobs", [])
+        logger.debug(f"Job data extracted: {len(job_data)} jobs found in response")
         
         if not job_data:
             logger.warning("No jobs found in response")
             return jobs
         
-        # Collect all jobs
         all_jobs = []
         for job in job_data:
             job_id = job.get("id")
             if not job_id:
+                logger.warning("Job missing ID, skipping")
                 continue
-                
             job_url = f"https://www.metacareers.com/jobs/{job_id}/"
             job_location = ", ".join(job.get("locations", [])) if job.get("locations") else location
-            
             if "remote" in job_location.lower():
                 job_location = f"Remote - {location}"
-                
             job_entry = create_job_entry(
                 company=company,
                 job_title=job.get("title", "Unknown Title"),
@@ -731,17 +757,18 @@ def scrape_meta(company, base_url, location):
                 posted_datetime=datetime.now()
             )
             all_jobs.append(job_entry)
+            logger.debug(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
         
         logger.info(f"Extracted {len(all_jobs)} total jobs from {company}")
         
-        # Filter for University/Grad roles (case-insensitive)
+        # Filter for University/Grad roles
         jobs = [job for job in all_jobs if "university" in job["job_title"].lower() or "grad" in job["job_title"].lower()]
         logger.info(f"Filtered to {len(jobs)} University/Grad jobs")
         
     except Exception as e:
         logger.error(f"Error fetching GraphQL data: {e}")
         if "response" in locals():
-            logger.debug(f"Response: {response.text[:500]}...")
+            logger.debug(f"Raw response content: {response.content[:500]}")
     
     return jobs
 
@@ -909,7 +936,6 @@ def scrape_apple(company, base_url, location):
     return jobs
 
 def scrape_uber(company, base_url, location):
-    """Scrape Uber job listings using their API endpoint with pagination, filtering for entry-level roles."""
     jobs = []
     api_url = "https://www.uber.com/api/loadSearchJobsResults?localeCode=en"
     
@@ -921,21 +947,16 @@ def scrape_uber(company, base_url, location):
         "Content-Type": "application/json",
         "Origin": "https://www.uber.com",
         "Referer": base_url,
-        "x-csrf-token": "x",  # Placeholder; might need dynamic handling if required
-        "x-uber-sites-page-edge-cache-enabled": "true",
+        "x-csrf-token": "x",  # TODO: Fetch dynamically if required
     }
     
-    # Parse the base URL
+    session = requests.Session()
+    session.headers.update(headers)
+    
     parsed_url = urlparse(base_url)
     query_params = parse_qs(parsed_url.query)
-    
-    # Extract query
     query = query_params.get("query", ["Software Engineer"])[0]
-    
-    # Extract departments
     departments = query_params.get("department", ["Engineering"])
-    
-    # Extract locations
     locations_raw = query_params.get("location", [])
     locations = []
     for loc in locations_raw:
@@ -943,16 +964,9 @@ def scrape_uber(company, base_url, location):
         if len(parts) >= 3:
             country = parts[0]
             region = parts[1]
-            city = "-".join(parts[2:])  # Handle multi-part city names
+            city = "-".join(parts[2:])
             locations.append({"country": country, "region": region, "city": city})
     
-    # Extract teams (optional)
-    teams = query_params.get("team", [])
-    
-    # Extract line of business (optional)
-    line_of_business = query_params.get("lineOfBusinessName", [])
-    
-    # Build payload dynamically
     payload = {
         "limit": 10,
         "page": 0,
@@ -962,19 +976,37 @@ def scrape_uber(company, base_url, location):
             "location": locations if locations else [{"country": "USA", "region": "", "city": location}],
         }
     }
-    if teams:
-        payload["params"]["team"] = teams
-    if line_of_business:
-        payload["params"]["lineOfBusinessName"] = line_of_business
     
     logger.info(f"Scraping {company} jobs with query: {query}, locations: {len(locations)}")
     
     try:
         while True:
             logger.info(f"Fetching page {payload['page']}")
-            response = session.post(api_url, headers=headers, json=payload, timeout=30)
+            response = session.post(api_url, json=payload, timeout=30)
             response.raise_for_status()
-            data = response.json()
+            
+            logger.debug(f"Raw response content (first 500 chars): {response.content[:500]}")
+            logger.debug(f"Response headers: {response.headers}")
+            
+            content_encoding = response.headers.get("Content-Encoding", "").lower()
+            if content_encoding == "br":
+                logger.debug("Attempting to parse Brotli-encoded response")
+                try:
+                    data = json.loads(response.content.decode("utf-8"))
+                    logger.debug("Parsed raw content as JSON directly")
+                except json.JSONDecodeError:
+                    logger.debug("Decompressing Brotli-encoded response")
+                    try:
+                        decompressed = brotli.decompress(response.content)
+                        data = json.loads(decompressed.decode("utf-8"))
+                        logger.debug(f"Decompressed response (first 500 chars): {decompressed[:500].decode('utf-8')}")
+                    except brotli.error as e:
+                        logger.error(f"Brotli decompression failed: {e}")
+                        raise
+            elif content_encoding in ("gzip", "deflate"):
+                data = response.json()
+            else:
+                data = response.json()
             
             if data.get("status") != "success":
                 logger.error(f"API returned non-success status: {data.get('status')}")
@@ -982,9 +1014,9 @@ def scrape_uber(company, base_url, location):
             
             results = data.get("data", {}).get("results", [])
             total_results = data.get("data", {}).get("totalResults", {}).get("low", 0)
-            logger.info(f"Found {len(results)} jobs on page {payload['page']}, total expected: {total_results}")
+            logger.info(f"Found {len(results) if results is not None else 0} jobs on page {payload['page']}, total expected: {total_results}")
             
-            if not results:
+            if results is None or not results:
                 logger.info(f"No more jobs on page {payload['page']}")
                 break
             
@@ -997,36 +1029,24 @@ def scrape_uber(company, base_url, location):
                 job_title = job.get("title", "Unknown Title")
                 job_description = job.get("description", "")
                 
-                # Mock job entry for is_entry_level check
-                mock_job = {
-                    "job_title": job_title,
-                    "job_description": job_description
-                }
-                
-                # Check if the job is entry-level
-                if not is_entry_level(mock_job):  # No min/pref quals available
+                mock_job = {"job_title": job_title, "job_description": job_description}
+                if not is_entry_level(mock_job):
                     logger.debug(f"Skipped non-entry-level job: {job_title}")
                     continue
                 
-                job_url = f"https://www.uber.com/us/en/careers/list/{job_id}/"
-                
-                # Primary location
+                job_url = f"https://www.uber.com/global/en/careers/list/{job_id}/"
                 primary_location = job.get("location", {})
                 job_location = f"{primary_location.get('city', '')}, {primary_location.get('region', '')}, {primary_location.get('countryName', location)}".strip(", ")
-                
-                # Check all locations for remote status
                 all_locations = job.get("allLocations", [])
                 if any("remote" in loc.get("city", "").lower() or "remote" in loc.get("region", "").lower() for loc in all_locations):
                     job_location = f"Remote - {job_location}"
                 
-                # Parse creation date
                 creation_date = job.get("creationDate", "N/A")
                 if creation_date != "N/A":
                     try:
                         posted_datetime = datetime.strptime(creation_date, "%Y-%m-%dT%H:%M:%S.000Z")
                         posted_time = posted_datetime.strftime("%Y-%m-%d")
-                    except ValueError as e:
-                        logger.debug(f"Failed to parse creationDate '{creation_date}': {e}")
+                    except ValueError:
                         posted_time = "N/A"
                         posted_datetime = datetime.now()
                 else:
@@ -1044,7 +1064,7 @@ def scrape_uber(company, base_url, location):
                 jobs.append(job_entry)
                 logger.debug(f"Added entry-level job: {job_title} at {job_location}")
             
-            if len(jobs) >= total_results or len(results) < payload["limit"]:
+            if len(jobs) >= total_results or (results is not None and len(results) < payload["limit"]):
                 logger.info(f"Reached end of jobs (extracted {len(jobs)} of {total_results})")
                 break
             
@@ -1055,11 +1075,8 @@ def scrape_uber(company, base_url, location):
     
     except Exception as e:
         logger.error(f"Error scraping {company}: {e}")
-        if "response" in locals():
-            logger.debug(f"Response: {response.text[:500]}...")
     
     return jobs
-
 
 SCRAPERS = {
     "Amazon": scrape_amazon,

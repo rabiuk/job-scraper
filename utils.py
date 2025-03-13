@@ -97,22 +97,16 @@ def create_job_entry(company, job_title, url, location, posted_time, posted_date
     return job_entry
 
 def clean_text(text):
-    """
-    Clean up text by removing HTML tags, extra whitespace, and returning lowercase plain text.
-    """
     if not text or not isinstance(text, str):
-        logger.debug("Clean_text received empty or non-string input, returning empty string")
+        # Only log if debugging is critical; otherwise, silently return
+        # logger.debug("Clean_text received empty or non-string input, returning empty string")
         return ""
-    
-    # Parse HTML and extract text
     soup = BeautifulSoup(text, "html.parser")
     plain_text = soup.get_text(separator=" ")
-    
-    # Remove extra whitespace and convert to lowercase
     cleaned = " ".join(plain_text.split()).lower()
-    
-    # logger.debug(f"Cleaned text from '{text[:100]}...' to '{cleaned[:100]}...'")
+    logger.debug(f"Cleaned text from '{text[:100]}...' to '{cleaned[:100]}...'")
     return cleaned
+
 
 def extract_min_years(text):
     """Extract the minimum years of experience from a text string."""
@@ -135,15 +129,15 @@ def extract_min_years(text):
 
 def is_entry_level(job):
     title = clean_text(job.get("job_title", ""))
-    description = clean_text(job.get("job_description", ""))
-    min_qual = clean_text(job.get("minimum_qualifications", ""))
-    pref_qual = clean_text(job.get("preferred_qualifications", ""))
+    description = clean_text(job.get("job_description", "")) if job.get("job_description") else ""
+    min_qual = clean_text(job.get("minimum_qualifications", "")) if job.get("minimum_qualifications") else ""
+    pref_qual = clean_text(job.get("preferred_qualifications", "")) if job.get("preferred_qualifications") else ""
 
     positive_keywords = ["junior", "associate"]
     positive_phrases = ["entry level", "entry-level", "new grad", "recent graduate", "early career", "internship experience", "student", "beginner"]
-    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "vp", "director", "chief", "phd"]  # Removed "advanced"
+    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "vp", "director", "chief", "phd"]
 
-    combined_text = f"{title} {description} {min_qual} {pref_qual}"
+    combined_text = f"{title} {description} {min_qual} {pref_qual}".strip()
 
     has_negative_keywords = any(re.search(rf'\b{kw}\b', combined_text) for kw in negative_keywords)
     if has_negative_keywords:
@@ -151,6 +145,7 @@ def is_entry_level(job):
         logger.debug(f"Rejected: Found negative keywords {matched_keywords} in combined text")
         return False
 
+    # [Rest of the function remains unchanged]
     has_positive_title_description = (
         any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', description) for kw in positive_keywords)
         or any(phrase in title or phrase in description for phrase in positive_phrases)
@@ -163,19 +158,19 @@ def is_entry_level(job):
         logger.debug(f"Accepted: Found positive indicators {matched_positives} in title/description")
         return True
 
-    combined_quals = f"{min_qual} {pref_qual}"
-    min_years = extract_min_years(combined_quals) if combined_quals else 0
-    has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_quals))
-
-    if has_zero_start_range:
-        logger.debug(f"Accepted: Experience range starts at 0 years (found in qualifications)")
-        return True
-    if min_years > 1:
-        logger.debug(f"Rejected: Minimum {min_years} years exceeds entry-level threshold")
-        return False
-    if min_years in (0, 1):
-        logger.debug(f"Accepted: Minimum {min_years} year(s) within entry-level threshold")
-        return True
+    combined_quals = f"{min_qual} {pref_qual}".strip()
+    if combined_quals:
+        min_years = extract_min_years(combined_quals)
+        has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_quals))
+        if has_zero_start_range:
+            logger.debug(f"Accepted: Experience range starts at 0 years (found in qualifications)")
+            return True
+        if min_years > 1:
+            logger.debug(f"Rejected: Minimum {min_years} years exceeds entry-level threshold")
+            return False
+        if min_years in (0, 1):
+            logger.debug(f"Accepted: Minimum {min_years} year(s) within entry-level threshold")
+            return True
 
     has_positive_qual = (
         any(re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual) for kw in positive_keywords)
@@ -191,6 +186,7 @@ def is_entry_level(job):
 
     logger.debug("Accepted: No negative keywords found and no other rejection criteria met")
     return True
+
 
 # Load board URLs from JSON
 def load_board_urls(board_urls_file="company_scraper/board_urls.json"):
