@@ -1,4 +1,4 @@
-from setup_enviroment import setup_environment
+from setup_environment import setup_environment
 from utils import send_email
 
 # Set up environment

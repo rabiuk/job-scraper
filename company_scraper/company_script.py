@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import json
@@ -7,8 +8,8 @@ import requests
 import logging
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from setup_enviroment import setup_environment
-from utils import send_email, extract_min_years, is_entry_level, load_companies, load_seen_jobs, save_seen_jobs
+from setup_environment import setup_environment
+from utils import create_job_entry, send_email, is_entry_level, load_companies, load_seen_jobs, save_seen_jobs
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
 from requests_ratelimiter import LimiterSession
 
@@ -140,17 +141,16 @@ def scrape_amazon(company, base_url, location):
                     posted_time = "N/A"
                     posted_datetime = datetime.now()
                 
-                job_entry = {
-                    "company": company,
-                    "job_title": job.get("title", "Unknown Title"),
-                    "url": job_url,
-                    "location": job_location,
-                    "posted_time": posted_time,
-                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_datetime": posted_datetime
-                }
+                job_entry = create_job_entry(
+                    company=company,
+                    job_title=job.get("title", "Unknown Title"),
+                    url=job_url,
+                    location=job_location,
+                    posted_time=posted_time,
+                    posted_datetime=posted_datetime
+                )
                 jobs.append(job_entry)
-                logger.info(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
+                logger.debug(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
             
             if len(job_list) < result_limit or (total_hits and offset + result_limit >= total_hits):
                 logger.info(f"End of jobs (extracted {len(jobs)} of {total_hits})")
@@ -246,17 +246,17 @@ def scrape_google(company, base_url, location):
                     posted_time = "N/A"
                     posted_datetime = datetime.now()
                 
-                job_entry = {
-                    "company": company_name,
-                    "job_title": job_title,
-                    "url": job_url,
-                    "location": job_location,
-                    "posted_time": posted_time,
-                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_datetime": posted_datetime
-                }
+                job_entry = create_job_entry(
+                    company=company_name,
+                    job_title=job_title,
+                    url=job_url,
+                    location=job_location,
+                    posted_time=posted_time,
+                    posted_datetime=posted_datetime
+                )
+
                 jobs.append(job_entry)
-                logger.info(f"Added job: {job_title} at {job_location}")
+                logger.debug(f"Added job: {job_title} at {job_location}")
             
             if len(job_items) < results_per_page:
                 logger.info(f"End of jobs at page {page} (total: {len(jobs)})")
@@ -358,17 +358,16 @@ def scrape_netflix(company, base_url, location):
                     posted_time = "N/A"
                     posted_datetime = datetime.now()
                 
-                job_entry = {
-                    "company": company,
-                    "job_title": job.get("name", "Unknown Title"),
-                    "url": job_url,
-                    "location": job_location,
-                    "posted_time": posted_time,
-                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_datetime": posted_datetime
-                }
+                job_entry = create_job_entry(
+                    company=company,
+                    job_title=job.get("name", "Unknown Title"),
+                    url=job_url,
+                    location=job_location,
+                    posted_time=posted_time,
+                    posted_datetime=posted_datetime
+                )
                 jobs.append(job_entry)
-                logger.info(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
+                logger.debug(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
             
             # Check if we've fetched all jobs
             if params["start"] + len(positions) >= total_count:
@@ -491,23 +490,22 @@ def scrape_intuit(company, base_url, location):
         for job in us_ca_jobs:
             if job["category"] == "Software Engineering":
                 mock_job = {
-                    "postingTitle": job["title"],
-                    "jobSummary": ""  # Intuit doesn't provide summaries
+                    "job_title": job["title"],
+                    "job_description": ""  # Intuit doesn't provide descriptions
                 }
 
                 # Check if entry level using title only
-                if is_entry_level(mock_job, "", ""):  # Empty min/pref qual
-                    job_entry = {
-                        "company": company,
-                        "job_title": job["title"],
-                        "url": job["url"],
-                        "location": job["location"],
-                        "posted_time": "N/A",  # Intuit HTML doesn’t provide this easily
-                        "found_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-                        "posted_datetime": now
-                    }
+                if is_entry_level(mock_job):  # No quals, defaults to ""
+                    job_entry = create_job_entry(
+                        company=company,
+                        job_title=job["title"],
+                        url=job["url"],
+                        location=job["location"],
+                        posted_time="Unknown", # Intuit doesnt provide this
+                        posted_datetime=datetime.now()
+                    )
                     jobs.append(job_entry)
-                    logger.info(f"Added entry-level job: {job['title']}")
+                    logger.debug(f"Added entry-level job: {job['title']}")
                 else:
                     logger.debug(f"Skipped non-entry-level position: {job['title']}")
         
@@ -521,20 +519,19 @@ def scrape_intuit(company, base_url, location):
 
 # Microsoft-specific scraper
 def scrape_microsoft(company, base_url, location):
+    """Scrape Microsoft job listings for all available entry-level jobs."""
     jobs = []
-    
-    # API endpoint for Microsoft job search
+    seen_job_ids = set()
     api_url = "https://gcsservices.careers.microsoft.com/search/api/v1/search"
     
-    # Headers to mimic browser request (from your logs)
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-CA,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
         "Origin": "https://jobs.careers.microsoft.com",
-        "Referer": base_url,
-        "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+        "Referer": "https://jobs.careers.microsoft.com/",
+        "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
         "sec-fetch-dest": "empty",
@@ -542,102 +539,78 @@ def scrape_microsoft(company, base_url, location):
         "sec-fetch-site": "same-site",
     }
     
-    # Parse query parameters from base_url
     parsed_url = urlparse(base_url)
-    query_params = parse_qs(parsed_url.query)
+    params = parse_qs(parsed_url.query)
+    params["pgSz"] = "20"  # Matches API's enforced page size
     
-    # Convert query_params to a flat dict (taking first value for each key)
-    params = {key: value[0] for key, value in query_params.items()}
+    logger.info(f"Starting scrape with params: {params}")
     
-    # Ensure some defaults if not present in base_url
-    params.setdefault("l", "en_us")      # Language default
-    params.setdefault("pg", "1")         # Start at page 1
-    params.setdefault("pgSz", "20")      # Default page size
-    params.setdefault("o", "Relevance")  # Default sort order
-    params.setdefault("flt", "true")     # Default filter flag
+    page = 1
+    total_jobs_encountered = 0
     
-    # Log the initial request details
-    logger.info(f"Parsed params from base_url: {params}")
-    logger.info(f"Making API request to {api_url} with initial page {params['pg']}")
-    
-    try:
-        while True:
-            # Convert pg and pgSz to integers for pagination logic
-            current_page = int(params["pg"])
-            page_size = int(params["pgSz"])
-            
-            # Send GET request to API
+    while True:
+        params["pg"] = str(page)
+        try:
             response = session.get(api_url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
-            # Extract job listings
-            job_data = data.get("operationResult", {}).get("result", {}).get("jobs", [])
-            if not job_data:
-                logger.warning(f"No jobs found on page {current_page}")
+            job_list = data["operationResult"]["result"].get("jobs", [])
+            total_jobs_encountered += len(job_list)
+            
+            if not job_list:
+                logger.info(f"No jobs found on page {page}. Stopping.")
                 break
             
-            total_jobs = data.get("operationResult", {}).get("result", {}).get("totalJobs", 0)
-            logger.info(f"Found {len(job_data)} jobs on page {current_page}, total expected: {total_jobs}")
-            
-            # Process each job
-            for job in job_data:
+            for job in job_list:
                 job_id = job.get("jobId")
-                if not job_id:
-                    logger.warning("Job missing jobId, skipping")
+                if not job_id or job_id in seen_job_ids:
                     continue
+
+                job_title = job.get("title", "Unknown Title")
+                job_description = job.get("properties", {}).get("description", "")
+                mock_job = {"job_title": job_title, "job_description": job_description, "jobId": job_id}
                 
-                # Construct specific job URL
+                seen_job_ids.add(job_id)
+                
+                if not is_entry_level(mock_job):
+                    continue
+
                 job_url = f"https://jobs.careers.microsoft.com/global/en/job/{job_id}/"
+                locations = [loc["description"] for loc in job.get("locations", [])]
+                job_location = ", ".join(locations) if locations else location
                 
-                # Get location, fallback to provided location
-                job_location = ", ".join(job.get("properties", {}).get("locations", [])) or location
-                if "remote" in job_location.lower():
-                    job_location = f"Remote - {location}"
-                
-                # Parse posting date
-                posting_date = job.get("postingDate", "N/A")
-                if posting_date != "N/A":
+                posted_date = job.get("postedDate", "N/A")
+                if posted_date != "N/A":
                     try:
-                        posted_datetime = datetime.strptime(posting_date, "%Y-%m-%dT%H:%M:%S+00:00")
+                        posted_datetime = datetime.strptime(posted_date.split("T")[0], "%Y-%m-%d")
                         posted_time = posted_datetime.strftime("%Y-%m-%d")
-                    except ValueError as e:
-                        logger.debug(f"Failed to parse postingDate '{posting_date}': {e}")
+                    except ValueError:
                         posted_time = "N/A"
                         posted_datetime = datetime.now()
                 else:
                     posted_time = "N/A"
                     posted_datetime = datetime.now()
                 
-                # Build job entry
-                job_entry = {
-                    "company": company,
-                    "job_title": job.get("title", "Unknown Title"),
-                    "url": job_url,
-                    "location": job_location,
-                    "posted_time": posted_time,
-                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_datetime": posted_datetime
-                }
+                job_entry = create_job_entry(
+                    company=company,
+                    job_title=job_title,
+                    url=job_url,
+                    location=job_location,
+                    posted_time=posted_time,
+                    posted_datetime=posted_datetime
+                )
                 jobs.append(job_entry)
-                logger.info(f"Added job: {job_entry['job_title']} at {job_entry['location']}")
             
-            # Pagination check
-            if len(jobs) >= total_jobs or len(job_data) < page_size:
-                logger.info(f"Reached end of jobs (extracted {len(jobs)} of {total_jobs})")
-                break
-            
-            # Move to next page
-            params["pg"] = str(current_page + 1)
-            logger.info(f"Moving to page {params['pg']}")
+            page += 1
+            time.sleep(random.uniform(2, 4))
         
-        logger.info(f"Extracted {len(jobs)} jobs from {company}")
-        
-    except Exception as e:
-        logger.error(f"Error fetching API data for {company}: {e}")
-        if "response" in locals():
-            logger.debug(f"Response: {response.text[:500]}...")
+        except requests.RequestException as e:
+            logger.error(f"Error fetching page {page}: {e}")
+            break
     
+    jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
+    logger.info(f"Finished scraping {company}: {total_jobs_encountered} total jobs found, {len(jobs)} entry-level jobs extracted")
     return jobs
 
 # Meta-specific scraper
@@ -749,15 +722,14 @@ def scrape_meta(company, base_url, location):
             if "remote" in job_location.lower():
                 job_location = f"Remote - {location}"
                 
-            job_entry = {
-                "company": company,
-                "job_title": job.get("title", "Unknown Title"),
-                "url": job_url,
-                "location": job_location,
-                "posted_time": "N/A",
-                "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "posted_datetime": datetime.now()
-            }
+            job_entry = create_job_entry(
+                company=company,
+                job_title=job.get("title", "Unknown Title"),
+                url=job_url,
+                location=job_location,
+                posted_time="Unknown",
+                posted_datetime=datetime.now()
+            )
             all_jobs.append(job_entry)
         
         logger.info(f"Extracted {len(all_jobs)} total jobs from {company}")
@@ -862,8 +834,8 @@ def scrape_apple(company, base_url, location):
                 continue
             seen_ids_per_page[page].add(job_id)
             
-            posting_date = job.get("postingDate", "N/A")
-            if posting_date != "N/A":
+            posting_date = job.get("postingDate", "Unknown")
+            if posting_date != "Unknown":
                 try:
                     posted_datetime = datetime.strptime(posting_date, "%b %d, %Y")
                     posted_time = posted_datetime.strftime("%Y-%m-%d")
@@ -871,10 +843,10 @@ def scrape_apple(company, base_url, location):
                         logger.debug(f"Skipping job {job_id} ({job.get('postingTitle')}) - Posted {posted_time}, before cutoff")
                         continue
                 except ValueError:
-                    posted_time = "N/A"
+                    posted_time = "Unknown"
                     posted_datetime = datetime.now()
             else:
-                posted_time = "N/A"
+                posted_time = "Unknown"
                 posted_datetime = datetime.now()
             
             detail_url = f"https://jobs.apple.com/api/role/detail/{job_id}?languageCd=en-us"
@@ -888,29 +860,20 @@ def scrape_apple(company, base_url, location):
                 logger.warning(f"Failed to fetch details for job {job_id}: {e}")
                 min_qual = ""
                 pref_qual = ""
+
+            mock_job = {
+                "job_title": job.get("postingTitle", "Unknown Title"),
+                "job_description": job.get("jobDescription", ""),
+                "minimum_qualifications": min_qual,
+                "preferred_qualifications": pref_qual
+            }
             
-            if not is_entry_level(job, min_qual, pref_qual):
-                years = extract_min_years(min_qual)
-                title = job.get("postingTitle", "").lower()
-                summary = job.get("jobSummary", "").lower()
-                negative_keywords = ["senior", "sr", "staff", "lead", "manager", "principal", "expert", "advanced"]
-                has_negative_title_summary = any(
-                    re.search(rf"\b{kw}\b|\b{kw}\s+.*engineer|\b{kw}\s+.*developer", title + " " + summary)
-                    for kw in negative_keywords
-                )
-                if years > 1:
-                    reason = f"Years: {years}"
-                elif has_negative_title_summary:
-                    reason = "Negative keyword in title/summary"
-                else:
-                    reason = "Other rejection criteria"
-                logger.debug(f"Skipped job: {job.get('postingTitle')} (ID: {job_id}) - Reason: {reason}")
+            if not is_entry_level(mock_job):
+                logger.debug(f"Skipped non-entry-level job: {job.get('postingTitle')} (ID: {job_id})")
                 continue
             
-            reason = "No years mentioned" if not extract_min_years(min_qual) else f"Max {extract_min_years(min_qual)} year(s)"
-            logger.info(f"Entry-level job found: {job.get('postingTitle')} (ID: {job_id}) - Reason: {reason}")
-            logger.debug(f"Minimum Qualifications: {min_qual if min_qual else 'Not provided'}")
-            
+            logger.info(f"Entry-level job found: {job.get('postingTitle')} (ID: {job_id})")
+
             transformed_title = job.get("transformedPostingTitle", job.get("postingTitle", "unknown-title").lower().replace(" ", "-"))
             job_url = f"https://jobs.apple.com/en-us/details/{job_id}/{transformed_title}"
             
@@ -919,16 +882,17 @@ def scrape_apple(company, base_url, location):
             if job.get("homeOffice", False):
                 job_location = f"Remote - {job_location}"
             
-            job_entry = {
-                "company": company,
-                "job_title": job.get("postingTitle", "Unknown Title"),
-                "url": job_url,
-                "location": job_location,
-                "posted_time": posted_time,
-                "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "posted_datetime": posted_datetime,
-                "minimum_qualifications": min_qual
-            }
+            job_entry = create_job_entry(
+                company=company,
+                job_title=job.get("postingTitle", "Unknown Title"),
+                url=job_url,
+                location=job_location,
+                posted_time=posted_time,
+                posted_datetime=posted_datetime,
+                min_qual=min_qual,
+                pref_qual=pref_qual
+            )
+            job_entry["minimum_qualifications"] = min_qual  # Add extra field
             jobs.append(job_entry)
         
         logger.info(f"Page {page} added {len(jobs) - previous_total} new jobs, cumulative total: {len(jobs)}")
@@ -1035,12 +999,12 @@ def scrape_uber(company, base_url, location):
                 
                 # Mock job entry for is_entry_level check
                 mock_job = {
-                    "postingTitle": job_title,
-                    "jobSummary": job_description
+                    "job_title": job_title,
+                    "job_description": job_description
                 }
                 
                 # Check if the job is entry-level
-                if not is_entry_level(mock_job, "", ""):  # No min/pref quals available
+                if not is_entry_level(mock_job):  # No min/pref quals available
                     logger.debug(f"Skipped non-entry-level job: {job_title}")
                     continue
                 
@@ -1069,17 +1033,16 @@ def scrape_uber(company, base_url, location):
                     posted_time = "N/A"
                     posted_datetime = datetime.now()
                 
-                job_entry = {
-                    "company": company,
-                    "job_title": job_title,
-                    "url": job_url,
-                    "location": job_location,
-                    "posted_time": posted_time,
-                    "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_datetime": posted_datetime
-                }
+                job_entry = create_job_entry(
+                    company=company,
+                    job_title=job_title,
+                    url=job_url,
+                    location=job_location,
+                    posted_time=posted_time,
+                    posted_datetime=posted_datetime
+                )
                 jobs.append(job_entry)
-                logger.info(f"Added entry-level job: {job_title} at {job_location}")
+                logger.debug(f"Added entry-level job: {job_title} at {job_location}")
             
             if len(jobs) >= total_results or len(results) < payload["limit"]:
                 logger.info(f"Reached end of jobs (extracted {len(jobs)} of {total_results})")
@@ -1153,8 +1116,17 @@ def main():
             logger.info(f"Found {new_jobs_count} new jobs for {company_name} in this cycle")
 
         save_seen_jobs(seen_jobs, new_jobs_count)
-        logger.info("Waiting 30 mins before next check...")
-        time.sleep(30 * 60)
+
+        # Configurable sleep time from .env
+        try:
+            sleep_minutes = int(os.getenv("SLEEP_MINUTES", 30))
+            if sleep_minutes <= 0:
+                raise ValueError("Sleep minutes must be positive")
+        except ValueError as e:
+            logger.warning(f"Invalid SLEEP_MINUTES: {e}. Defaulting to 30 minutes.")
+            sleep_minutes = 30
+        logger.info(f"Waiting {sleep_minutes} minutes before next check...")
+        time.sleep(sleep_minutes * 60)
 
 if __name__ == "__main__":
     main()

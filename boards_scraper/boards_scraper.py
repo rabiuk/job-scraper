@@ -1,7 +1,6 @@
 import os
 import time
 import json
-import aiohttp  # For async Discord webhook requests
 import logging
 import asyncio
 import requests
@@ -9,7 +8,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 from requests_ratelimiter import LimiterSession
 from utils import send_discord_message, load_board_urls, load_seen_jobs, save_seen_jobs
-from setup_enviroment import setup_environment
+from setup_environment import setup_environment
 from zoneinfo import ZoneInfo
 
 # Set up environment

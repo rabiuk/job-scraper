@@ -1,6 +1,6 @@
 import os
 from discord_webhook import DiscordWebhook
-from setup_enviroment import setup_environment
+from setup_environment import setup_environment
 
 # Setup environment
 setup_environment()

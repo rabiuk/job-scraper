@@ -1,10 +1,12 @@
+from datetime import datetime
 import os
 import re
 import json
 import smtplib
-import logging
 import aiohttp  # For async Discord webhook requests
 import asyncio
+import logging
+from bs4 import BeautifulSoup
 from email.message import EmailMessage
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,57 @@ async def send_discord_message(webhook_url, content, max_retries=3):
     logger.error(f"Failed to send Discord message after {max_retries} attempts due to rate limiting")
     return False
 
+def create_job_entry(company, job_title, url, location, posted_time, posted_datetime, min_qual="", pref_qual=""):
+    """
+    Create a standardized job entry dictionary with optional qualifications.
+
+    Args:
+        company (str): Company name
+        job_title (str): Job title
+        url (str): Job URL
+        location (str): Job location
+        posted_time (str): Posting date as string (e.g., "2025-03-12" or "N/A")
+        posted_datetime (datetime): Posting date as datetime object
+        min_qual (str, optional): Minimum qualifications, defaults to ""
+        pref_qual (str, optional): Preferred qualifications, defaults to ""
+    
+    Returns:
+        dict: Standardized job entry, with qualifications added only if non-empty
+    """
+    job_entry = {
+        "company": company,
+        "job_title": job_title,
+        "url": url,
+        "location": location,
+        "posted_time": posted_time,
+        "found_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "posted_datetime": posted_datetime
+    }
+    # Only add qualifications if they’re provided and non-empty
+    if min_qual:
+        job_entry["minimum_qualifications"] = min_qual
+    if pref_qual:
+        job_entry["preferred_qualifications"] = pref_qual
+    return job_entry
+
+def clean_text(text):
+    """
+    Clean up text by removing HTML tags, extra whitespace, and returning lowercase plain text.
+    """
+    if not text or not isinstance(text, str):
+        logger.debug("Clean_text received empty or non-string input, returning empty string")
+        return ""
+    
+    # Parse HTML and extract text
+    soup = BeautifulSoup(text, "html.parser")
+    plain_text = soup.get_text(separator=" ")
+    
+    # Remove extra whitespace and convert to lowercase
+    cleaned = " ".join(plain_text.split()).lower()
+    
+    # logger.debug(f"Cleaned text from '{text[:100]}...' to '{cleaned[:100]}...'")
+    return cleaned
+
 def extract_min_years(text):
     """Extract the minimum years of experience from a text string."""
     text = text.lower()
@@ -80,72 +133,64 @@ def extract_min_years(text):
             min_years.append(int(match))
     return min(min_years) if min_years else 0
 
-def is_entry_level(job, min_qual, pref_qual):
-    title = job.get("postingTitle", "").lower()
-    summary = job.get("jobSummary", "").lower()
-    min_qual = min_qual.lower() if min_qual else ""
-    pref_qual = pref_qual.lower() if pref_qual else ""
+def is_entry_level(job):
+    title = clean_text(job.get("job_title", ""))
+    description = clean_text(job.get("job_description", ""))
+    min_qual = clean_text(job.get("minimum_qualifications", ""))
+    pref_qual = clean_text(job.get("preferred_qualifications", ""))
 
-    # Define positive and negative indicators
     positive_keywords = ["junior", "associate"]
-    positive_phrases = [
-        "entry level", "entry-level", "new grad", "recent graduate", "early career",
-        "internship experience", "student", "beginner"
-    ]
-    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "advanced", "vp", "director", "chief", "phd"]
+    positive_phrases = ["entry level", "entry-level", "new grad", "recent graduate", "early career", "internship experience", "student", "beginner"]
+    negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "vp", "director", "chief", "phd"]  # Removed "advanced"
 
-    # Combine all text fields for negative keyword checks
-    combined_text = f"{title} {summary} {min_qual} {pref_qual}"
+    combined_text = f"{title} {description} {min_qual} {pref_qual}"
 
-    # Check for negative keywords
-    has_negative_keywords = any(
-        re.search(rf'\b{kw}\b', combined_text) 
-        for kw in negative_keywords
-    )
-
+    has_negative_keywords = any(re.search(rf'\b{kw}\b', combined_text) for kw in negative_keywords)
     if has_negative_keywords:
-        logger.debug("Rejected due to negative keywords")
+        matched_keywords = [kw for kw in negative_keywords if re.search(rf'\b{kw}\b', combined_text)]
+        logger.debug(f"Rejected: Found negative keywords {matched_keywords} in combined text")
         return False
 
-    # Check title/summary for positive indicators
-    has_positive_title_summary = (
-        any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', summary) for kw in positive_keywords)
-        or any(phrase in title or phrase in summary for phrase in positive_phrases)
+    has_positive_title_description = (
+        any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', description) for kw in positive_keywords)
+        or any(phrase in title or phrase in description for phrase in positive_phrases)
     )
-    if has_positive_title_summary:
-        logger.debug("Accepted due to positive title/summary")
+    if has_positive_title_description:
+        matched_positives = (
+            [kw for kw in positive_keywords if re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', description)] +
+            [phrase for phrase in positive_phrases if phrase in title or phrase in description]
+        )
+        logger.debug(f"Accepted: Found positive indicators {matched_positives} in title/description")
         return True
 
-    # Check experience requirements FIRST
     combined_quals = f"{min_qual} {pref_qual}"
     min_years = extract_min_years(combined_quals) if combined_quals else 0
     has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_quals))
 
-    logger.debug(f"Min years: {min_years}, Zero start: {has_zero_start_range}")
-
-    # Experience-based decisions
     if has_zero_start_range:
-        logger.debug("Accepted: Range starts at 0")
+        logger.debug(f"Accepted: Experience range starts at 0 years (found in qualifications)")
         return True
     if min_years > 1:
-        logger.debug(f"Rejected: {min_years} years exceeds threshold")
+        logger.debug(f"Rejected: Minimum {min_years} years exceeds entry-level threshold")
         return False
     if min_years in (0, 1):
-        logger.debug(f"Accepted: {min_years} years within threshold")
+        logger.debug(f"Accepted: Minimum {min_years} year(s) within entry-level threshold")
         return True
 
-    # Check qualifications for positive indicators LAST
     has_positive_qual = (
         any(re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual) for kw in positive_keywords)
         or any(phrase in min_qual or phrase in pref_qual for phrase in positive_phrases)
     )
     if has_positive_qual:
-        logger.debug("Accepted due to positive qualifications")
+        matched_positives = (
+            [kw for kw in positive_keywords if re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual)] +
+            [phrase for phrase in positive_phrases if phrase in min_qual or phrase in pref_qual]
+        )
+        logger.debug(f"Accepted: Found positive indicators {matched_positives} in qualifications")
         return True
 
-    # Final fallback
-    logger.debug("Defaulting to no negative keywords check")
-    return not has_negative_keywords
+    logger.debug("Accepted: No negative keywords found and no other rejection criteria met")
+    return True
 
 # Load board URLs from JSON
 def load_board_urls(board_urls_file="company_scraper/board_urls.json"):
