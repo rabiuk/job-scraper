@@ -133,19 +133,23 @@ def is_entry_level(job):
     min_qual = clean_text(job.get("minimum_qualifications", "")) if job.get("minimum_qualifications") else ""
     pref_qual = clean_text(job.get("preferred_qualifications", "")) if job.get("preferred_qualifications") else ""
 
-    positive_keywords = ["junior", "associate"]
+    positive_keywords = ["junior", "associate", "intern"]
     positive_phrases = ["entry level", "entry-level", "new grad", "recent graduate", "early career", "internship experience", "student", "beginner"]
     negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "vp", "director", "chief", "phd"]
 
-    combined_text = f"{title} {description} {min_qual} {pref_qual}".strip()
+    # Step 1: Prioritize internships
+    if "intern" in positive_keywords and re.search(r'\b(intern)\b', title):
+        logger.debug("Accepted: Found 'intern' in title, prioritizing as entry-level")
+        return True
 
-    has_negative_keywords = any(re.search(rf'\b{kw}\b', combined_text) for kw in negative_keywords)
-    if has_negative_keywords:
-        matched_keywords = [kw for kw in negative_keywords if re.search(rf'\b{kw}\b', combined_text)]
-        logger.debug(f"Rejected: Found negative keywords {matched_keywords} in combined text")
+    # Step 2: Check for negative keywords in the title
+    has_negative_keywords_in_title = any(re.search(rf'\b{kw}\b', title) for kw in negative_keywords)
+    if has_negative_keywords_in_title:
+        matched_keywords = [kw for kw in negative_keywords if re.search(rf'\b{kw}\b', title)]
+        logger.debug(f"Rejected: Found negative keywords {matched_keywords} in title")
         return False
 
-    # [Rest of the function remains unchanged]
+    # Step 3: Check for positive indicators in title or description
     has_positive_title_description = (
         any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', description) for kw in positive_keywords)
         or any(phrase in title or phrase in description for phrase in positive_phrases)
@@ -158,12 +162,13 @@ def is_entry_level(job):
         logger.debug(f"Accepted: Found positive indicators {matched_positives} in title/description")
         return True
 
-    combined_quals = f"{min_qual} {pref_qual}".strip()
-    if combined_quals:
-        min_years = extract_min_years(combined_quals)
-        has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_quals))
+    # Step 4: Check years of experience in all available fields
+    combined_text = f"{min_qual} {pref_qual} {description}".strip()
+    if combined_text:
+        min_years = extract_min_years(combined_text)
+        has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_text))
         if has_zero_start_range:
-            logger.debug(f"Accepted: Experience range starts at 0 years (found in qualifications)")
+            logger.debug(f"Accepted: Experience range starts at 0 years")
             return True
         if min_years > 1:
             logger.debug(f"Rejected: Minimum {min_years} years exceeds entry-level threshold")
@@ -172,6 +177,7 @@ def is_entry_level(job):
             logger.debug(f"Accepted: Minimum {min_years} year(s) within entry-level threshold")
             return True
 
+    # Step 5: Check for positive indicators in qualifications
     has_positive_qual = (
         any(re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual) for kw in positive_keywords)
         or any(phrase in min_qual or phrase in pref_qual for phrase in positive_phrases)
@@ -184,7 +190,8 @@ def is_entry_level(job):
         logger.debug(f"Accepted: Found positive indicators {matched_positives} in qualifications")
         return True
 
-    logger.debug("Accepted: No negative keywords found and no other rejection criteria met")
+    # Step 6: Default case - assume entry-level if no experience or seniority specified
+    logger.debug("Accepted: No experience or seniority indicators found, assuming entry-level")
     return True
 
 

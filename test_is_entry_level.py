@@ -2,6 +2,7 @@ import unittest
 from utils import is_entry_level
 from setup_environment import setup_environment
 
+# To run this (keep this here): python -m unittest test_is_entry_level.py
 setup_environment()
 
 class TestIsEntryLevel(unittest.TestCase):
@@ -35,8 +36,8 @@ class TestIsEntryLevel(unittest.TestCase):
 
     def test_negative_keywords_in_description(self):
         jobs = [
-            {"job_title": "Software Engineer", "job_description": "This is a senior position."},
-            {"job_title": "Software Engineer", "job_description": "This is a lead software engineer position."},
+            {"job_title": "Senior Software Engineer", "job_description": "This is a senior position."},
+            {"job_title": "Lead Software Engineer", "job_description": "This is a lead software engineer position."},
         ]
         for job in jobs:
             job.setdefault("minimum_qualifications", "Bachelor's degree in Computer Science.")
@@ -102,8 +103,6 @@ class TestIsEntryLevel(unittest.TestCase):
             "minimum_qualifications": "Bachelor's degree in Computer Science."
         }
         negative_pref_quals = [
-            "Senior-level experience preferred.",
-            "Expert developers are encouraged to apply.",
             "10+ years of experience required.",
             "2-3+ years expected with previous internship experience",
             "3+ years of industry experience, BS in Computer Engineering, Electrical Engineering, Computer Science, Math, or equivalent experience.",

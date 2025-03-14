@@ -38,5 +38,10 @@
     "Company": "Uber",
     "URL": "https://www.uber.com/us/en/careers/list/?query=Software%20Engineer&location=USA-California-San%20Francisco&location=USA-California-Culver%20City&location=USA-New%20York-New%20York&location=USA-New%20York-Bronx&location=USA-California-Sunnyvale&location=USA-Illinois-Chicago&location=USA-Washington-Seattle&location=USA-Georgia-Atlanta&location=USA-Arizona-Phoenix&location=USA-District%20of%20Columbia-Washington&location=USA-Florida-Miami&location=USA-Massachusetts-Boston&location=USA-Massachusetts-Saugus&location=USA-Texas-Dallas&location=CAN-Ontario-Toronto&location=CAN-Quebec-Montreal&department=Engineering",
     "Location": "CA/US"
+  },
+  {
+    "Company": "Twitch",
+    "URL": "https://www.twitch.tv/jobs/en/careers/",
+    "Location": "US"
   }
 ]

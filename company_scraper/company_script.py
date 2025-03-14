@@ -616,9 +616,6 @@ def scrape_microsoft(company, base_url, location):
     return jobs
 
 # Meta-specific scraper
-import zstandard as zstd
-import json
-
 def scrape_meta(company, base_url, location):
     jobs = []
     url = "https://www.metacareers.com/graphql"
