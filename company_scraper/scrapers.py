@@ -10,11 +10,11 @@ import logging
 import brotli
 import zstandard as zstd
 import requests
-from requests_ratelimiter import LimiterSession
 from datetime import datetime, timedelta
 from setup_environment import setup_environment
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
+from urllib.parse import urlparse, parse_qs, urlencode, urljoin
 from company_scraper.base_scraper import BaseScraper  # Import the base class
+from cloudscraper import create_scraper
 from typing import Dict, List
 
 # Setup environment
@@ -1189,6 +1189,155 @@ class TwitchScraper(BaseScraper):
         logger.info(f"Extracted {len(jobs)} entry-level jobs from Twitch")
         return jobs
 
+class DoorDashScraper(BaseScraper):
+    def __init__(self, company: str, base_url: str, location: str):
+        super().__init__(company, base_url, location)
+        self.session = create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'mobile': False,
+                'desktop': True
+            },
+            delay=10
+        )
+        self.headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Language": "en-CA,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://careersatdoordash.com/",
+            "Cookie": "",
+            "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "cache-control": "max-age=0",
+            "priority": "u=0, i"
+        }
+        parsed_url = urlparse(self.base_url)
+        self.query_params = parse_qs(parsed_url.query)
+        self.api_base_url = "https://careersatdoordash.com/job-search/"
+        self.params = {
+            "department": self.query_params.get("department", ["DashMart|Engineering|"])[0],
+            "function": self.query_params.get("function", ["Software Engineering|"])[0],
+            "keyword": self.query_params.get("keyword", [""])[0],
+            "location": self.query_params.get("location", [""])[0],
+            "intern": self.query_params.get("intern", ["0"])[0],
+            "spage": "1"
+        }
+        self.seen_link_ids = set()
+        self.initialize_session()
+
+    def initialize_session(self):
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                prelim_url = "https://careersatdoordash.com/"
+                logger.info(f"Initializing session (attempt {attempt + 1}/{max_attempts})")
+                response = self.session.get(prelim_url, headers=self.headers, timeout=30)
+                response.raise_for_status()
+                self.headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in self.session.cookies.items()])
+                self.headers["Referer"] = prelim_url
+                logger.debug("Session initialized with fresh cookies")
+                return
+            except Exception as e:
+                logger.error(f"Session init failed (attempt {attempt + 1}): {e}")
+                if attempt + 1 == max_attempts:
+                    raise Exception("Failed to initialize session after all attempts")
+                time.sleep(5)
+
+    def scrape(self):
+        jobs = []
+        page = 1
+        logger.info(f"Scraping {self.company} jobs")
+
+        try:
+            while True:
+                self.params["spage"] = str(page)
+                paginated_url = f"{self.api_base_url}?{urlencode(self.params, doseq=True)}"
+                logger.info(f"Fetching page {page}")
+
+                if page > 1:
+                    self.headers["Referer"] = f"{self.api_base_url}?{urlencode({**self.params, 'spage': str(page-1)}, doseq=True)}"
+
+                response = self.fetch_page(paginated_url)
+                if response.status_code == 403:
+                    logger.error(f"403 Forbidden on page {page}")
+                    break
+                if response.status_code == 200 and "job-item" not in response.text:
+                    logger.warning(f"Page {page} loaded but has no job items")
+                    break
+
+                soup = BeautifulSoup(response.text, "html.parser")
+                job_items = soup.find_all("div", class_="job-item")
+                if not job_items:
+                    logger.info(f"No jobs found on page {page}")
+                    break
+
+                logger.info(f"Found {len(job_items)} jobs on page {page}")
+                duplicates = 0
+
+                for item in job_items:
+                    title_container = item.find("div", class_="title-container")
+                    if not title_container:
+                        logger.debug("Skipping job: No title-container")
+                        continue
+
+                    link_tag = title_container.find("a", href=True)
+                    job_title = link_tag.text.strip() if link_tag else "Unknown Title"
+                    job_url = urljoin(self.api_base_url, link_tag["href"]) if link_tag else None
+                    if not job_url:
+                        logger.debug(f"Skipping job '{job_title}': No URL")
+                        continue
+
+                    link_id = job_url.split('/')[-1] if job_url else "N/A"
+                    if link_id in self.seen_link_ids:
+                        duplicates += 1
+                        logger.debug(f"Duplicate job skipped: {job_title} (Link ID: {link_id})")
+                        continue
+                    self.seen_link_ids.add(link_id)
+
+                    job_id_tag = title_container.find("div", class_="label")
+                    job_id = job_id_tag.text.replace("Job ID: ", "").strip() if job_id_tag else "N/A"
+
+                    location_container = item.find("div", class_="location-container")
+                    job_location = (
+                        location_container.find("div", class_="value-secondary").text.strip()
+                        if location_container and location_container.find("div", class_="value-secondary")
+                        else self.location
+                    )
+
+                    posted_datetime = datetime.now()
+                    posted_time = "Unknown"
+
+                    job_entry = create_job_entry(
+                        company=self.company,
+                        job_title=job_title,
+                        url=job_url,
+                        location=job_location,
+                        posted_time=posted_time,
+                        posted_datetime=posted_datetime
+                    )
+                    jobs.append(job_entry)
+
+                logger.info(f"Added {len(job_items) - duplicates} new jobs from page {page} ({duplicates} duplicates skipped). Total: {len(jobs)}")
+                page += 1
+                time.sleep(random.uniform(1, 3))
+
+            logger.info(f"Completed scraping. Extracted {len(jobs)} jobs from {self.company}")
+
+        except Exception as e:
+            logger.error(f"Scraping failed on page {page}: {e}")
+            if "response" in locals():
+                logger.debug(f"Response snippet: {response.text[:500]}")
+
+        jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
+        return jobs
 
 
 SCRAPERS = {
@@ -1200,5 +1349,6 @@ SCRAPERS = {
     "Meta": MetaScraper,
     "Apple": AppleScraper,
     "Uber": UberScraper,
-    "Twitch": TwitchScraper
+    "Twitch": TwitchScraper,
+    "DoorDash": DoorDashScraper
 }
