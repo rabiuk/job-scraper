@@ -137,7 +137,10 @@ def is_entry_level(job):
     positive_phrases = ["entry level", "entry-level", "new grad", "recent graduate", "early career", "internship experience", "student", "beginner"]
     negative_keywords = ["senior", "head", "sr", "staff", "lead", "manager", "principal", "expert", "vp", "director", "chief", "phd"]
 
-    # Step 1: Prioritize internships
+    # Combine all fields except title for consistent checking
+    combined_text = f"{min_qual} {pref_qual} {description}".strip()
+
+    # Step 1: Prioritize internships in title
     if "intern" in positive_keywords and re.search(r'\b(intern)\b', title):
         logger.debug("Accepted: Found 'intern' in title, prioritizing as entry-level")
         return True
@@ -149,21 +152,7 @@ def is_entry_level(job):
         logger.debug(f"Rejected: Found negative keywords {matched_keywords} in title")
         return False
 
-    # Step 3: Check for positive indicators in title or description
-    has_positive_title_description = (
-        any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', description) for kw in positive_keywords)
-        or any(phrase in title or phrase in description for phrase in positive_phrases)
-    )
-    if has_positive_title_description:
-        matched_positives = (
-            [kw for kw in positive_keywords if re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', description)] +
-            [phrase for phrase in positive_phrases if phrase in title or phrase in description]
-        )
-        logger.debug(f"Accepted: Found positive indicators {matched_positives} in title/description")
-        return True
-
-    # Step 4: Check years of experience in all available fields
-    combined_text = f"{min_qual} {pref_qual} {description}".strip()
+    # Step 3: Check years of experience in combined text
     if combined_text:
         min_years = extract_min_years(combined_text)
         has_zero_start_range = bool(re.search(r'\b0-\d*\+?\s*years?', combined_text))
@@ -177,20 +166,20 @@ def is_entry_level(job):
             logger.debug(f"Accepted: Minimum {min_years} year(s) within entry-level threshold")
             return True
 
-    # Step 5: Check for positive indicators in qualifications
-    has_positive_qual = (
-        any(re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual) for kw in positive_keywords)
-        or any(phrase in min_qual or phrase in pref_qual for phrase in positive_phrases)
+    # Step 4: Check for positive indicators in title and combined text
+    has_positive_indicators = (
+        any(re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', combined_text) for kw in positive_keywords)
+        or any(phrase in title or phrase in combined_text for phrase in positive_phrases)
     )
-    if has_positive_qual:
+    if has_positive_indicators:
         matched_positives = (
-            [kw for kw in positive_keywords if re.search(rf'\b{kw}\b', min_qual) or re.search(rf'\b{kw}\b', pref_qual)] +
-            [phrase for phrase in positive_phrases if phrase in min_qual or phrase in pref_qual]
+            [kw for kw in positive_keywords if re.search(rf'\b{kw}\b', title) or re.search(rf'\b{kw}\b', combined_text)] +
+            [phrase for phrase in positive_phrases if phrase in title or phrase in combined_text]
         )
-        logger.debug(f"Accepted: Found positive indicators {matched_positives} in qualifications")
+        logger.debug(f"Accepted: Found positive indicators {matched_positives} in title or combined text")
         return True
 
-    # Step 6: Default case - assume entry-level if no experience or seniority specified
+    # Step 5: Default case - assume entry-level if no experience or seniority specified
     logger.debug("Accepted: No experience or seniority indicators found, assuming entry-level")
     return True
 
