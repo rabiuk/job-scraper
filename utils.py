@@ -112,19 +112,30 @@ def extract_min_years(text):
     """Extract the minimum years of experience from a text string."""
     text = text.lower()
     min_years = []
+    
+    # Match ranges like "X-Y years" or "X-Y+ years"
     range_matches = re.findall(r'(\d+)-(\d*\+?)\s*years?', text)
     for start, end in range_matches:
         min_years.append(int(start))
-    plus_matches = re.findall(r'(\d+)\+\s*years?|at least (\d+)\s*years?', text)
+    logger.debug(f"Range matches in '{text}': {range_matches}")
+
+    # Match "X+ years" or "at least X years" with flexible spacing
+    plus_matches = re.findall(r'(\d+)\s*\+\s*years?|at least (\d+)\s*years?', text)
     for match in plus_matches:
-        if match[0]:
+        if match[0]:  # From (\d+)\+
             min_years.append(int(match[0]))
-        elif match[1]:
+        elif match[1]:  # From at least (\d+)
             min_years.append(int(match[1]))
+    logger.debug(f"Plus matches in '{text}': {plus_matches}")
+
+    # Match standalone "X years"
     standalone_matches = re.findall(r'(\d+)\s*years?', text)
     for match in standalone_matches:
-        if int(match) not in min_years:
+        if int(match) not in min_years:  # Avoid duplicates
             min_years.append(int(match))
+    logger.debug(f"Standalone matches in '{text}': {standalone_matches}")
+
+    logger.debug(f"Extracted years from '{text}': {min_years}")
     return min(min_years) if min_years else 0
 
 def is_entry_level(job):

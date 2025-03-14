@@ -493,12 +493,9 @@ class IntuitScraper(BaseScraper):
 
         return jobs
     
-# ... (Existing imports, AmazonScraper, GoogleScraper, NetflixScraper, IntuitScraper remain unchanged)
-
 class MicrosoftScraper(BaseScraper):
     def __init__(self, company: str, base_url: str, location: str):
         super().__init__(company, base_url, location)
-        # Override headers for Microsoft
         self.headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "application/json, text/plain, */*",
@@ -513,56 +510,79 @@ class MicrosoftScraper(BaseScraper):
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-site",
         }
-        # Set up API URL and initial parameters
         self.api_url = "https://gcsservices.careers.microsoft.com/search/api/v1/search"
+        self.job_api_url = "https://gcsservices.careers.microsoft.com/search/api/v1/job/{job_id}?lang=en_us"
         parsed_url = urlparse(self.base_url)
         self.params = parse_qs(parsed_url.query)
-        self.params["pgSz"] = "20"  # Matches API's enforced page size
+        self.params["pgSz"] = "20"
         self.seen_job_ids = set()
+        self.cutoff_date = datetime.now() - timedelta(days=7)
+
+    def fetch_job_details(self, job_id: str) -> dict:
+        """Fetch detailed job information."""
+        url = self.job_api_url.format(job_id=job_id)
+        try:
+            response = self.fetch_page(url)
+            data = response.json()
+            job_data = data.get("operationResult", {}).get("result")
+            if not job_data:
+                logger.warning(f"No job data for job {job_id}")
+                return {}
+            return job_data
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"Failed to fetch details for job {job_id}: {e}")
+            return {}
 
     def scrape(self):
         jobs = []
         page = 1
         total_jobs_encountered = 0
 
-        logger.info(f"Starting scrape with params: {self.params}")
+        logger.info(f"Scraping Microsoft jobs (cutoff: {self.cutoff_date.strftime('%Y-%m-%d')})")
 
         try:
             while True:
                 self.params["pg"] = str(page)
                 response = self.fetch_page(self.api_url, params=self.params)
                 data = response.json()
-
                 job_list = data["operationResult"]["result"].get("jobs", [])
                 total_jobs_encountered += len(job_list)
 
                 if not job_list:
-                    logger.info(f"No jobs found on page {page}. Stopping.")
+                    logger.info(f"No jobs on page {page}, stopping")
                     break
+
+                logger.debug(f"Processing {len(job_list)} jobs on page {page}")
+
+                # Track if we found any jobs within the cutoff on this page
+                found_recent_job = False
 
                 for job in job_list:
                     job_id = job.get("jobId")
                     if not job_id or job_id in self.seen_job_ids:
                         continue
 
-                    job_title = job.get("title", "Unknown Title")
-                    job_description = job.get("properties", {}).get("description", "")
-                    mock_job = {"job_title": job_title, "job_description": job_description, "jobId": job_id}
-
                     self.seen_job_ids.add(job_id)
-
-                    if not is_entry_level(mock_job):
+                    job_details = self.fetch_job_details(job_id)
+                    if not job_details:
                         continue
 
-                    job_url = f"https://jobs.careers.microsoft.com/global/en/job/{job_id}/"
-                    locations = [loc["description"] for loc in job.get("locations", [])]
-                    job_location = ", ".join(locations) if locations else self.location
+                    if job_details.get("jobStatus", "Posted") == "Unposted":
+                        logger.debug(f"Skipping closed job {job_id} (closed on {job_details.get('closedDate', 'Unknown')})")
+                        continue
 
-                    posted_date = job.get("postedDate", "N/A")
+                    job_title = job_details.get("title", "Unknown Title")
+                    posted_info = job_details.get("posted", {})
+                    posted_date = posted_info.get("external", "N/A") if posted_info else "N/A"
                     if posted_date != "N/A":
                         try:
                             posted_datetime = datetime.strptime(posted_date.split("T")[0], "%Y-%m-%d")
                             posted_time = posted_datetime.strftime("%Y-%m-%d")
+                            if posted_datetime < self.cutoff_date:
+                                logger.debug(f"Skipping job {job_id} - Posted {posted_time}, before cutoff")
+                                continue
+                            else:
+                                found_recent_job = True  # Found a job within cutoff
                         except ValueError:
                             posted_time = "N/A"
                             posted_datetime = datetime.now()
@@ -570,26 +590,47 @@ class MicrosoftScraper(BaseScraper):
                         posted_time = "N/A"
                         posted_datetime = datetime.now()
 
+                    mock_job = {
+                        "job_title": job_title,
+                        "job_description": job_details.get("description", ""),
+                        "minimum_qualifications": job_details.get("qualifications", ""),
+                        "preferred_qualifications": job_details.get("responsibilities", "")
+                    }
+
+                    if not is_entry_level(mock_job):
+                        logger.debug(f"Skipping non-entry-level job: {job_title} (ID: {job_id})")
+                        continue
+
+                    job_url = f"https://jobs.careers.microsoft.com/global/en/job/{job_id}/"
+                    locations = [loc["description"] for loc in job.get("locations", [])]
+                    job_location = ", ".join(locations) if locations else self.location
+
                     job_entry = create_job_entry(
                         company=self.company,
                         job_title=job_title,
                         url=job_url,
                         location=job_location,
                         posted_time=posted_time,
-                        posted_datetime=posted_datetime
+                        posted_datetime=posted_datetime,
+                        min_qual=job_details.get("qualifications", ""),
+                        pref_qual=job_details.get("responsibilities", "")
                     )
                     jobs.append(job_entry)
+                    logger.info(f"Added job: {job_title} (ID: {job_id})")
+
+                # Stop if no jobs on this page were within cutoff
+                if not found_recent_job:
+                    logger.info(f"No jobs within cutoff on page {page}, stopping")
+                    break
 
                 page += 1
-                time.sleep(random.uniform(2, 4))  # Respect rate limits with a random delay
+                time.sleep(random.uniform(2, 4))
 
         except requests.RequestException as e:
             logger.error(f"Error fetching page {page}: {e}")
-            if "response" in locals():
-                logger.debug(f"Response: {response.text[:500]}...")
 
         jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
-        logger.info(f"Finished scraping {self.company}: {total_jobs_encountered} total jobs found, {len(jobs)} entry-level jobs extracted")
+        logger.info(f"Scraped {len(jobs)} entry-level jobs from {total_jobs_encountered} total")
         return jobs
 
 
@@ -769,7 +810,6 @@ class MetaScraper(BaseScraper):
 class AppleScraper(BaseScraper):
     def __init__(self, company: str, base_url: str, location: str):
         super().__init__(company, base_url, location)
-        # Override headers for Apple (HTML scraping)
         self.headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -780,89 +820,96 @@ class AppleScraper(BaseScraper):
             "Upgrade-Insecure-Requests": "1",
             "Cookie": "geo=US; dslang=US-EN; s_cc=true; at_check=true"
         }
-        # Parse the base URL
-        parsed_url = urllib.parse.urlparse(self.base_url)
-        self.query_params = urllib.parse.parse_qs(parsed_url.query)
-        if "key" in self.query_params:
-            self.query_params["key"] = [urllib.parse.unquote(self.query_params["key"][0])]
+        self.api_url = f"{urllib.parse.urlparse(self.base_url).scheme}://{urllib.parse.urlparse(self.base_url).netloc}{urllib.parse.urlparse(self.base_url).path}"
+        self.detail_api_url = "https://jobs.apple.com/api/role/detail/{job_id}?languageCd=en-us"
+        self.params = urllib.parse.parse_qs(urllib.parse.urlparse(self.base_url).query)
+        if "key" in self.params:
+            self.params["key"] = [urllib.parse.unquote(self.params["key"][0])]
+        self.params["page"] = ["1"]  # Default, updated in scrape
+        self.seen_job_ids = set()
         self.cutoff_date = datetime.now() - timedelta(days=7)
         self.max_retries = 3
         self.retry_delay = 10
-        self.seen_ids_per_page = {}
+
+    def fetch_job_details(self, job_id: str) -> dict:
+        """Fetch detailed job information from Apple's detail API."""
+        url = self.detail_api_url.format(job_id=job_id)
+        for attempt in range(self.max_retries):
+            try:
+                response = self.fetch_page(url, timeout=10)
+                data = response.json()
+                return data if data else {}
+            except (requests.RequestException, ValueError) as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(f"Attempt {attempt + 1} failed for job {job_id}: {e}. Retrying in {self.retry_delay}s...")
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.warning(f"Failed to fetch details for job {job_id} after {self.max_retries} attempts: {e}")
+                    return {}
 
     def scrape(self):
         jobs = []
         page = 1
+        total_jobs_encountered = 0
 
-        logger.info(f"Cutoff date for jobs: {self.cutoff_date.strftime('%Y-%m-%d')}")
-        logger.info(f"Scraping {self.company} jobs with query: {self.query_params}")
+        logger.info(f"Scraping {self.company} jobs (cutoff: {self.cutoff_date.strftime('%Y-%m-%d')})")
 
         try:
             while True:
-                self.query_params["page"] = [str(page)]
-                query_string = "&".join(f"{k}={urllib.parse.quote(v[0], safe='')}" for k, v in self.query_params.items())
-                paginated_url = f"{urllib.parse.urlparse(self.base_url).scheme}://{urllib.parse.urlparse(self.base_url).netloc}{urllib.parse.urlparse(self.base_url).path}?{query_string}"
-                logger.debug(f"Fetching {self.company} page {page} at {paginated_url} with User-Agent: {self.headers['User-Agent']}")
+                self.params["page"] = [str(page)]
+                query_string = "&".join(f"{k}={urllib.parse.quote(v[0], safe='')}" for k, v in self.params.items())
+                paginated_url = f"{self.api_url}?{query_string}"
+                logger.debug(f"Fetching page {page}: {paginated_url}")
 
                 for attempt in range(self.max_retries):
                     try:
                         response = self.fetch_page(paginated_url)
+                        match = re.search(r"window\.APP_STATE\s*=\s*({.*?});", response.text, re.DOTALL)
+                        if not match:
+                            logger.warning(f"No APP_STATE on page {page}, stopping")
+                            raise ValueError("No APP_STATE found")
+                        app_state = json.loads(match.group(1))
+                        job_list = app_state.get("searchResults", [])
                         break
-                    except requests.RequestException as e:
+                    except (requests.RequestException, ValueError) as e:
                         if attempt < self.max_retries - 1:
-                            logger.warning(f"Attempt {attempt + 1} failed for page {page}: {e}. Retrying in {self.retry_delay} seconds...")
+                            logger.warning(f"Attempt {attempt + 1} failed for page {page}: {e}. Retrying in {self.retry_delay}s...")
                             time.sleep(self.retry_delay)
                         else:
-                            logger.error(f"Error fetching page {page} after {self.max_retries} attempts: {e}")
+                            logger.error(f"Failed page {page} after {self.max_retries} attempts: {e}")
                             if "502" in str(e) or "503" in str(e):
-                                logger.info("Possible rate limit detected. Pausing for 15 minutes before exiting...")
-                                time.sleep(900)  # 15-minute pause
+                                logger.info("Rate limit detected, pausing 15min...")
+                                time.sleep(900)
                             jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
-                            logger.info(f"Extracted {len(jobs)} entry-level jobs from {self.company}")
+                            logger.info(f"Scraped {len(jobs)} entry-level jobs from {total_jobs_encountered} total")
                             return jobs
 
-                match = re.search(r"window\.APP_STATE\s*=\s*({.*?});", response.text, re.DOTALL)
-                if not match:
-                    logger.warning(f"No APP_STATE found on page {page}")
-                    break
-
-                app_state = json.loads(match.group(1))
-                total_jobs = app_state.get("totalRecords", float('inf'))
-                job_list = app_state.get("searchResults", [])
-
+                total_jobs_encountered += len(job_list)
                 if not job_list:
-                    logger.info(f"No jobs found on page {page}")
+                    logger.info(f"No jobs on page {page}, stopping")
                     break
 
-                logger.info(f"Found {len(job_list)} jobs on page {page}")
-                previous_total = len(jobs)
-                self.seen_ids_per_page[page] = set()
-
-                last_job = job_list[-1]
-                last_posting_date = last_job.get("postingDate", "N/A")
-                if last_posting_date != "N/A":
-                    try:
-                        last_posted_datetime = datetime.strptime(last_posting_date, "%b %d, %Y")
-                        if last_posted_datetime < self.cutoff_date:
-                            logger.info(f"Page {page} oldest job ({last_job.get('id')}: {last_job.get('postingTitle')}) posted {last_posted_datetime.strftime('%Y-%m-%d')} is before cutoff {self.cutoff_date.strftime('%Y-%m-%d')}. Stopping.")
-                            break
-                    except ValueError:
-                        logger.warning(f"Could not parse date for job {last_job.get('id')}: {last_posting_date}")
+                logger.debug(f"Processing {len(job_list)} jobs on page {page}")
+                found_recent_job = False
 
                 for job in job_list:
                     job_id = job.get("id")
-                    if not job_id or job_id in self.seen_ids_per_page[page]:
+                    if not job_id or job_id in self.seen_job_ids:
                         continue
-                    self.seen_ids_per_page[page].add(job_id)
+                    self.seen_job_ids.add(job_id)
 
+                    # Note: Apple doesn’t explicitly mark jobs as "closed" in search results,
+                    # but we’ll assume active unless detail fetch fails or data suggests otherwise
                     posting_date = job.get("postingDate", "Unknown")
                     if posting_date != "Unknown":
                         try:
                             posted_datetime = datetime.strptime(posting_date, "%b %d, %Y")
                             posted_time = posted_datetime.strftime("%Y-%m-%d")
                             if posted_datetime < self.cutoff_date:
-                                logger.debug(f"Skipping job {job_id} ({job.get('postingTitle')}) - Posted {posted_time}, before cutoff")
+                                logger.debug(f"Skipping job {job_id} - Posted {posted_time}, before cutoff")
                                 continue
+                            else:
+                                found_recent_job = True  # Within cutoff
                         except ValueError:
                             posted_time = "Unknown"
                             posted_datetime = datetime.now()
@@ -870,33 +917,23 @@ class AppleScraper(BaseScraper):
                         posted_time = "Unknown"
                         posted_datetime = datetime.now()
 
-                    detail_url = f"https://jobs.apple.com/api/role/detail/{job_id}?languageCd=en-us"
-                    try:
-                        detail_response = self.fetch_page(detail_url, timeout=10)
-                        detail_data = detail_response.json()
-                        min_qual = detail_data.get("minimumQualifications", "")
-                        pref_qual = detail_data.get("preferredQualifications", "")
-                    except requests.RequestException as e:
-                        logger.warning(f"Failed to fetch details for job {job_id}: {e}")
-                        min_qual = ""
-                        pref_qual = ""
+                    job_details = self.fetch_job_details(job_id)
+                    if not job_details:
+                        continue
 
+                    job_title = job.get("postingTitle", "Unknown Title")
                     mock_job = {
-                        "job_title": job.get("postingTitle", "Unknown Title"),
+                        "job_title": job_title,
                         "job_description": job.get("jobDescription", ""),
-                        "minimum_qualifications": min_qual,
-                        "preferred_qualifications": pref_qual
+                        "minimum_qualifications": job_details.get("minimumQualifications", ""),
+                        "preferred_qualifications": job_details.get("preferredQualifications", "")
                     }
 
                     if not is_entry_level(mock_job):
-                        logger.debug(f"Skipped non-entry-level job: {job.get('postingTitle')} (ID: {job_id})")
+                        logger.debug(f"Skipping non-entry-level job: {job_title} (ID: {job_id})")
                         continue
 
-                    logger.info(f"Entry-level job found: {job.get('postingTitle')} (ID: {job_id})")
-
-                    transformed_title = job.get("transformedPostingTitle", job.get("postingTitle", "unknown-title").lower().replace(" ", "-"))
-                    job_url = f"https://jobs.apple.com/en-us/details/{job_id}/{transformed_title}"
-
+                    job_url = f"https://jobs.apple.com/en-us/details/{job_id}/{job.get('transformedPostingTitle', job_title.lower().replace(' ', '-'))}"
                     locations = job.get("locations", [])
                     job_location = locations[0].get("name", self.location) if locations else self.location
                     if job.get("homeOffice", False):
@@ -904,34 +941,31 @@ class AppleScraper(BaseScraper):
 
                     job_entry = create_job_entry(
                         company=self.company,
-                        job_title=job.get("postingTitle", "Unknown Title"),
+                        job_title=job_title,
                         url=job_url,
                         location=job_location,
                         posted_time=posted_time,
                         posted_datetime=posted_datetime,
-                        min_qual=min_qual,
-                        pref_qual=pref_qual
+                        min_qual=job_details.get("minimumQualifications", ""),
+                        pref_qual=job_details.get("preferredQualifications", "")
                     )
-                    job_entry["minimum_qualifications"] = min_qual  # Add extra field
                     jobs.append(job_entry)
+                    logger.info(f"Added job: {job_title} (ID: {job_id})")
 
-                logger.info(f"Page {page} added {len(jobs) - previous_total} new jobs, cumulative total: {len(jobs)}")
-                logger.info(f"Total jobs reported by site: {total_jobs}, fetched so far: {len(jobs)}")
-
-                if len(job_list) < 20 or len(jobs) >= total_jobs:
-                    logger.info(f"Stopping at page {page} (fetched: {len(jobs)}, total expected: {total_jobs})")
+                if not found_recent_job:
+                    logger.info(f"No jobs within cutoff on page {page}, stopping")
                     break
 
                 page += 1
+                time.sleep(random.uniform(1, 3))
 
-        except Exception as e:
-            logger.error(f"Error scraping {self.company}: {e}")
-            if "response" in locals():
-                logger.debug(f"Response: {response.text[:500]}...")
+        except requests.RequestException as e:
+            logger.error(f"Error fetching page {page}: {e}")
 
         jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
-        logger.info(f"Extracted {len(jobs)} entry-level jobs from {self.company}")
+        logger.info(f"Scraped {len(jobs)} entry-level jobs from {total_jobs_encountered} total")
         return jobs
+    
 
 class UberScraper(BaseScraper):
     def __init__(self, company: str, base_url: str, location: str):

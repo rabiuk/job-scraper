@@ -68,12 +68,14 @@ class TestIsEntryLevel(unittest.TestCase):
             "preferred_qualifications": "Experience with Python."
         }
         negative_min_quals = [
+            "BS and 3 + years...",
             "Senior developer with 5+ years of experience.",
             "Expert developer with 10 years of experience.",
             "Lead developer with 7 years of experience.",
             "7+ years of hands-on experience as a Server Engineer with Java",
             "Applicants will have 5+ years experience in industry as a Software Engineer",
-            "A minimum of 3 years of network operations experience in a large scale enterprise"
+            "A minimum of 3 years of network operations experience in a large scale enterprise",
+            "Bachelor's Degree in Computer Science or related technical field AND 2+ years technical",
             "2-3 years of experience software development - contributed to code, code reviews, design reviews, and maintain production systems.",
         ]
         for min_qual in negative_min_quals:
