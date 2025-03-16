@@ -206,7 +206,7 @@ async def main():
                     f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"  # Added
                 )
                 # Uncomment to send to Discord
-                # await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
+                await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
                 await asyncio.sleep(1)
 
         logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")
