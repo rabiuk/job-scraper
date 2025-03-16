@@ -144,7 +144,7 @@ SCRAPERS = {
 
 async def main():
     boards = load_board_urls(BOARD_URLS_FILE)
-    seen_jobs = load_seen_jobs(SEEN_JOBS_FILE)  # Dictionary of URL: timestamp
+    seen_jobs = load_seen_jobs(SEEN_JOBS_FILE)
 
     while True:
         logger.info(f"Starting new job check cycle ({get_current_est_time()})")
@@ -174,15 +174,23 @@ async def main():
                     new_jobs_count += 1
                     total_new_jobs += 1
                     cycle_jobs.add(job_url)
-                    seen_jobs[job_key] = job["found_at"]  # Save with timestamp
+                    seen_jobs[job_key] = job["found_at"]
                     new_jobs_to_send.append(job)
-                    logger.info(f"New job #{new_jobs_count}: {job['job_title']} at {job['company']}")
+                    # Detailed logging like older main()
+                    logger.info(f"New job #{new_jobs_count} at {job['company']}:")
+                    logger.info(f"  Job Title: {job['job_title']}")
+                    logger.info(f"  Location: {job['location']}")
+                    logger.info(f"  Link: {job['url']}")
+                    logger.info(f"  Found At: {job['found_at']}")
+                    logger.info(f"  Posted At: {job['posted_time']}")
+                    logger.info(f"  Start At: {job['start_time']}")
+                    logger.info("-" * 50)
 
             logger.info(f"Found {new_jobs_count} new jobs for {board_name} - {location}")
 
-        if total_new_jobs > 0:
-            cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
-            try:
+        try:
+            if total_new_jobs > 0:
+                cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
                 await send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message)
                 logger.info("Sent cycle start message to Discord")
                 for job in new_jobs_to_send:
@@ -195,19 +203,18 @@ async def main():
                         f"  Posted At: {job['posted_time']}\n"
                         f"  Start At: {job['start_time']}"
                     )
-                    # Uncomment to send individual job messages
-                    # await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
+                    # Uncomment to send to Discord
+                    await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
                     await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Failed to send Discord messages: {str(e)}", exc_info=True)
 
-        logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")
-        save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)  # Save with timestamps
-
-
-        logger.info("Waiting 30 mins before next check...")
-        await asyncio.sleep(30 * 60)
-
+            logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")
+            save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
+            logger.info("Waiting 30 mins before next check...")
+            await asyncio.sleep(30 * 60)
+        except Exception as e:
+            logger.error(f"Cycle failed: {str(e)}", exc_info=True)
+            logger.info("Retrying in 5 minutes due to error...")
+            await asyncio.sleep(5 * 60)
 
 if __name__ == "__main__":
     asyncio.run(main())
