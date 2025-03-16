@@ -98,7 +98,7 @@ def scrape_simplify(board, base_url):
                     "url": simplify_url,
                     "found_at": current_time,
                     "posted_time": convert_to_est(updated_date) if updated_date != "N/A" else "N/A",
-                    "start_time": convert_to_est(doc.get("start_date", "N/A")),
+                    # "start_time": convert_to_est(doc.get("start_date", "N/A")), # Dont need
                     "key": simplify_url
                 })
             
@@ -176,45 +176,44 @@ async def main():
                     cycle_jobs.add(job_url)
                     seen_jobs[job_key] = job["found_at"]
                     new_jobs_to_send.append(job)
-                    # Detailed logging like older main()
                     logger.info(f"New job #{new_jobs_count} at {job['company']}:")
                     logger.info(f"  Job Title: {job['job_title']}")
                     logger.info(f"  Location: {job['location']}")
                     logger.info(f"  Link: {job['url']}")
                     logger.info(f"  Found At: {job['found_at']}")
                     logger.info(f"  Posted At: {job['posted_time']}")
-                    logger.info(f"  Start At: {job['start_time']}")
+                    # logger.info(f"  Start At: {job['start_time']}") # Dont need
+                    # logger.info(f"  Repost Info: {job.get('repost_info', 'N/A')}")  # Dont need this again
+                    logger.info(f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}")  # Added
                     logger.info("-" * 50)
 
             logger.info(f"Found {new_jobs_count} new jobs for {board_name} - {location}")
 
-        try:
-            if total_new_jobs > 0:
-                cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
-                await send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message)
-                logger.info("Sent cycle start message to Discord")
-                for job in new_jobs_to_send:
-                    discord_message = (
-                        f"New job at {job['company']}:\n"
-                        f"  Job Title: {job['job_title']}\n"
-                        f"  Location: {job['location']}\n"
-                        f"  Link: {job['url']}\n"
-                        f"  Found At: {job['found_at']}\n"
-                        f"  Posted At: {job['posted_time']}\n"
-                        f"  Start At: {job['start_time']}"
-                    )
-                    # Uncomment to send to Discord
-                    await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
-                    await asyncio.sleep(1)
+        if total_new_jobs > 0:
+            cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
+            await send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message)
+            logger.info("Sent cycle start message to Discord")
+            for job in new_jobs_to_send:
+                discord_message = (
+                    f"New job at {job['company']}:\n"
+                    f"  Job Title: {job['job_title']}\n"
+                    f"  Location: {job['location']}\n"
+                    f"  Link: {job['url']}\n"
+                    f"  Found At: {job['found_at']}\n"
+                    f"  Posted At: {job['posted_time']}\n"
+                    # f"  Start At: {job['start_time']}\n" # Dont need
+                    # f"  Repost Info: {job.get('repost_info', 'N/A')}\n"  # Dont need this...
+                    f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"  # Added
+                )
+                # Uncomment to send to Discord
+                # await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
+                await asyncio.sleep(1)
 
-            logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")
-            save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
-            logger.info("Waiting 30 mins before next check...")
-            await asyncio.sleep(30 * 60)
-        except Exception as e:
-            logger.error(f"Cycle failed: {str(e)}", exc_info=True)
-            logger.info("Retrying in 5 minutes due to error...")
-            await asyncio.sleep(5 * 60)
+        logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")
+        save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
+        logger.info("Waiting 30 mins before next check...")
+        await asyncio.sleep(30 * 60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -203,17 +203,40 @@ def fetch_job_detail(session, job_id, headers, cookies):
     return response.json() if response.status_code == 200 else None
 
 def parse_job_detail(detail_data):
-    """Extracts company and tertiary details."""
+    """Extracts company and detailed tertiary info including repost_info and apply_clicks."""
     company_name = None
-    tertiary = {"location": "Unknown", "posted_time": "Unknown"}
+    tertiary = {
+        "location": "Unknown",
+        "posted_time": "Unknown",  # Changed from previous code to match main structure
+        "repost_info": "Unknown",  # Added for "X days ago"
+        "apply_clicks": "Unknown"  # Added for "X applicants"
+    }
     for item in detail_data.get("included", []):
         if "name" in item and not company_name:
             company_name = item["name"]
         if "tertiaryDescription" in item:
             tertiary_text = item["tertiaryDescription"].get("text", "")
             parts = [part.strip() for part in tertiary_text.split("·")]
-            tertiary = {"location": parts[0], "posted_time": parts[1]} if len(parts) >= 2 else {"location": tertiary_text}
+            if len(parts) >= 3:
+                tertiary = {
+                    "location": parts[0],
+                    "repost_info": parts[1],  # e.g., "2 days ago"
+                    "apply_clicks": parts[2]  # e.g., "15 applicants"
+                }
+            elif len(parts) == 2:
+                tertiary = {
+                    "location": parts[0],
+                    "repost_info": parts[1],
+                    "apply_clicks": "Unknown"
+                }
+            else:
+                tertiary = {
+                    "location": tertiary_text,
+                    "repost_info": "Unknown",
+                    "apply_clicks": "Unknown"
+                }
     return company_name or "Unknown", tertiary
+
 
 def parse_url_to_api_query(url):
     """Converts LinkedIn URL to API query."""
@@ -259,7 +282,7 @@ def parse_url_to_api_query(url):
     return f"{base_api_url}{query_string})"
 
 def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
-    """Fetches LinkedIn jobs with pagination."""
+    """Fetches LinkedIn jobs with pagination and includes additional details."""
     jobs = []
     base_api_url = parse_url_to_api_query(url)
     
@@ -289,9 +312,11 @@ def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
                     "location": tertiary["location"],
                     "url": job["url"],
                     "found_at": current_time,
-                    "posted_time": tertiary["posted_time"],
-                    "start_time": "N/A",
-                    "key": job["url"]
+                    "posted_time": tertiary["repost_info"],  # Use repost_info as posted_time for consistency
+                    # "start_time": "N/A", Dont need..
+                    "key": job["url"],
+                    # "repost_info": tertiary["repost_info"],  # Dont need this again
+                    "apply_clicks": tertiary["apply_clicks"]  # Added
                 })
         
         logger.info(f"Found {len(job_postings)} LinkedIn jobs on page {page + 1}")
