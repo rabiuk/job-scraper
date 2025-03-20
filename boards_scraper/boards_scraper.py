@@ -32,46 +32,75 @@ def convert_to_est(utc_timestamp):
     return utc_time.astimezone(EST).strftime("%Y-%m-%d %H:%M:%S")
 
 def scrape_simplify(board, base_url):
-    """Scrape jobs from Simplify."""
+    """Scrape jobs from Simplify with dynamic country filtering, minimal logging."""
     jobs = []
     api_url = "https://xv95tgzrem61cja4p.a1.typesense.net/multi_search"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "text/plain",
+        "Origin": "https://simplify.jobs",
+        "Referer": "https://simplify.jobs/",
     }
     
     parsed_url = urlparse(base_url)
     query_params = parse_qs(parsed_url.query)
-    state = query_params.get("state", [""])[0]
-    country = query_params.get("country", [""])[0]
     search_query = query_params.get("query", ["Software Engineer"])[0]
     experience = query_params.get("experience", ["Entry Level/New Grad"])[0]
-    
-    filter_field = "locations" if state else "countries"
-    filter_value = state or country or ""
+    country = query_params.get("country", ["United States"])[0]
     
     page = 1
     per_page = 21
     cutoff_unix_time = int(time.time()) - (14 * 24 * 60 * 60)
-    
+
+    logger.info(f"🔎 Searching {board} jobs in {country} (Cutoff: {convert_to_est(cutoff_unix_time)})")
+
     while True:
         payload = {
-            "searches": [{
-                "collection": "jobs",
-                "filter_by": f"{filter_field}:=[`{filter_value}`] && experience_level:=[`{experience}`]",
-                "page": page,
-                "per_page": per_page,
-                "q": search_query,
-                "query_by": "title,company_name,functions,locations",
-                "sort_by": "updated_date:desc"
-            }]
+            "searches": [
+                {
+                    "collection": "jobs",
+                    "facet_by": "countries,degrees,experience_level,functions,locations",
+                    "filter_by": f"countries:=[`{country}`] && experience_level:=[`{experience}`]",
+                    "highlight_full_fields": "title,company_name,functions,locations",
+                    "max_facet_values": 50,
+                    "page": page,
+                    "per_page": per_page,
+                    "q": search_query,
+                    "query_by": "title,company_name,functions,locations",
+                    "sort_by": "_text_match:desc,updated_date:desc"
+                },
+                {
+                    "collection": "jobs",
+                    "facet_by": "countries",
+                    "filter_by": f"experience_level:=[`{experience}`]",
+                    "highlight_full_fields": "title,company_name,functions,locations",
+                    "max_facet_values": 50,
+                    "page": page,
+                    "per_page": per_page,
+                    "q": search_query,
+                    "query_by": "title,company_name,functions,locations",
+                    "sort_by": "_text_match:desc,updated_date:desc"
+                },
+                {
+                    "collection": "jobs",
+                    "facet_by": "experience_level",
+                    "filter_by": f"countries:=[`{country}`]",
+                    "highlight_full_fields": "title,company_name,functions,locations",
+                    "max_facet_values": 50,
+                    "page": page,
+                    "per_page": per_page,
+                    "q": search_query,
+                    "query_by": "title,company_name,functions,locations",
+                    "sort_by": "_text_match:desc,updated_date:desc"
+                }
+            ]
         }
         
         params = {"x-typesense-api-key": "sUjQlkfBFnglUFcsFsZVcE7xhI8lJ1RG"}
         
-        logger.info(f"Scraping {board} jobs from Simplify API, page {page}")
+        logger.info(f"📄 Fetching page {page}...")
         try:
             response = session.post(api_url, headers=headers, params=params, json=payload, timeout=30)
             response.raise_for_status()
@@ -79,38 +108,58 @@ def scrape_simplify(board, base_url):
             
             result = data["results"][0]
             hits = result["hits"]
+            total_found = result.get("found", 0)
+            logger.info(f"📌 Page {page}: Found {len(hits)}/{total_found} jobs")
+
+            if not hits:
+                logger.info("🚫 No more results.")
+                break
+
             current_time = get_current_est_time()
+            stale_count = 0
             
             for hit in hits:
                 doc = hit["document"]
                 updated_date = doc.get("updated_date", "N/A")
-                if updated_date != "N/A" and updated_date < cutoff_unix_time:
+                if updated_date == "N/A" or not isinstance(updated_date, int):
                     continue
-                
+
+                if updated_date < cutoff_unix_time:
+                    stale_count += 1
+                    continue
+
+                title = doc.get("title", "Unknown")
+                company = doc.get("company_name", "Unknown Company")
                 job_id = doc.get("id", "unknown-id")
-                job_title = doc.get("title", "Unknown-Title").replace(" ", "-").lower()
+                job_title = title.replace(" ", "-").lower()
                 simplify_url = f"https://simplify.jobs/p/{job_id}/{job_title}"
-                
+                job_key = f"simplify-{job_id}"
+
                 jobs.append({
-                    "job_title": doc.get("title", "Unknown Title"),
-                    "company": doc.get("company_name", "Unknown Company"),
+                    "job_title": title,
+                    "company": company,
                     "location": doc.get("locations", ["Unknown Location"])[0],
                     "url": simplify_url,
                     "found_at": current_time,
-                    "posted_time": convert_to_est(updated_date) if updated_date != "N/A" else "N/A",
-                    # "start_time": convert_to_est(doc.get("start_date", "N/A")), # Dont need
-                    "key": simplify_url
+                    "posted_time": convert_to_est(updated_date),
+                    "key": job_key
                 })
-            
-            if len(hits) < per_page:
+
+            if stale_count >= len(hits) // 2:
+                logger.info(f"⏳ Majority stale ({stale_count}/{len(hits)}).")
                 break
+            if page * per_page >= total_found:
+                logger.info(f"📊 End of results ({page * per_page}/{total_found}).")
+                break
+
             page += 1
         
         except requests.RequestException as e:
-            logger.error(f"Error fetching Simplify API data: {e}")
+            logger.error(f"❌ API error: {e}")
             break
     
     return jobs
+
 
 def scrape_linkedin(board, base_url):
     """Scrape jobs from LinkedIn."""
@@ -168,26 +217,26 @@ async def main():
 
             new_jobs_count = 0
             for job in new_jobs:
-                job_key = job.get("key")
+                job_key = job.get("key")  # ✅ Ensure we use the unique key
                 job_url = job.get("url")
+
                 if job_key and job_key not in seen_jobs and job_url not in cycle_jobs:
                     new_jobs_count += 1
                     total_new_jobs += 1
                     cycle_jobs.add(job_url)
                     seen_jobs[job_key] = job["found_at"]
                     new_jobs_to_send.append(job)
-                    logger.info(f"New job #{new_jobs_count} at {job['company']}:")
-                    logger.info(f"  Job Title: {job['job_title']}")
-                    logger.info(f"  Location: {job['location']}")
-                    logger.info(f"  Link: {job['url']}")
-                    logger.info(f"  Found At: {job['found_at']}")
-                    logger.info(f"  Posted At: {job['posted_time']}")
-                    # logger.info(f"  Start At: {job['start_time']}") # Dont need
-                    # logger.info(f"  Repost Info: {job.get('repost_info', 'N/A')}")  # Dont need this again
-                    logger.info(f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}")  # Added
+
+                    logger.info(f"✅ New job #{new_jobs_count} at {job['company']}:")
+                    logger.info(f"  🏢 Company: {job['company']}")
+                    logger.info(f"  💼 Job Title: {job['job_title']}")
+                    logger.info(f"  📍 Location: {job['location']}")
+                    logger.info(f"  🔗 Link: {job['url']}")
+                    logger.info(f"  ⏳ Found At: {job['found_at']}")
+                    logger.info(f"  📅 Posted At: {job['posted_time']}")
                     logger.info("-" * 50)
 
-            logger.info(f"Found {new_jobs_count} new jobs for {board_name} - {location}")
+            logger.info(f"🔎 Found {new_jobs_count} new jobs for {board_name} - {location}")
 
         if total_new_jobs > 0:
             cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
@@ -201,12 +250,10 @@ async def main():
                     f"  Link: {job['url']}\n"
                     f"  Found At: {job['found_at']}\n"
                     f"  Posted At: {job['posted_time']}\n"
-                    # f"  Start At: {job['start_time']}\n" # Dont need
-                    # f"  Repost Info: {job.get('repost_info', 'N/A')}\n"  # Dont need this...
                     f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"  # Added
                 )
                 # Uncomment to send to Discord
-                await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
+                # await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
                 await asyncio.sleep(1)
 
         logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")

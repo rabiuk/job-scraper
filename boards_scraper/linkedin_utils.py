@@ -4,8 +4,10 @@ import time
 import random
 import logging
 import requests
+import tempfile
 from datetime import datetime
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -13,25 +15,39 @@ from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import quote, urlparse, parse_qs
 from dotenv import load_dotenv
 from config import EST
+from selenium.common.exceptions import TimeoutException
 
 logger = logging.getLogger(__name__)
 load_dotenv()
 
 COOKIE_FILE = "boards_scraper/linkedin_cookies.json"
 
+
 def setup_selenium_driver():
-    """Sets up Chrome WebDriver with options."""
     chrome_options = Options()
-    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    try:
-        driver = webdriver.Chrome(options=chrome_options)
-        logger.info("Selenium WebDriver initialized successfully")
-        return driver
-    except Exception as e:
-        logger.error(f"Failed to initialize Selenium WebDriver: {str(e)}")
-        raise
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-software-rasterizer")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-setuid-sandbox")
+    chrome_options.add_argument("--disable-background-networking")
+    chrome_options.add_argument("--disable-breakpad")
+
+    # ✅ Use a persistent user data directory
+    user_data_dir = os.path.expanduser("~/.config/google-chrome")
+    chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+
+    service = Service("/usr/local/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+
+    # ✅ Log driver initialization and open LinkedIn manually
+    print("Chrome WebDriver initialized successfully.")
+    driver.get("https://www.linkedin.com")
+    print("Navigated to LinkedIn.")
+
+    return driver
+
 
 def type_human_like(element, text):
     """Types text into an element with human-like speed."""
@@ -128,7 +144,7 @@ def login_to_linkedin(driver):
                 logger.error("Unexpected login state: no navigation bar or error message detected")
                 raise Exception("Login completed but success not confirmed")
         
-        except EC.TimeoutException:
+        except TimeoutException:
             logger.error("Login timed out after 30 seconds; possible MFA or network issue")
             raise Exception("Login timed out; check for MFA or network connectivity")
     
@@ -282,23 +298,23 @@ def parse_url_to_api_query(url):
     return f"{base_api_url}{query_string})"
 
 def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
-    """Fetches LinkedIn jobs with pagination and includes additional details."""
+    """Fetches LinkedIn jobs, ignoring 'Jobs via Dice'."""
     jobs = []
     base_api_url = parse_url_to_api_query(url)
     
     for page in range(max_pages):
         start = page * 25
         api_url = f"{base_api_url}&start={start}"
-        logger.info(f"Fetching LinkedIn page {page + 1} (start={start}) from {url}")
+        logger.info(f"Fetching LinkedIn page {page + 1} (start={start})")
         
         response = session.get(api_url, headers=headers, timeout=30)
         if response.status_code != 200:
-            logger.warning(f"Failed to retrieve LinkedIn jobs: {response.status_code}")
+            logger.warning(f"Failed to retrieve jobs: {response.status_code}")
             break
         
         job_postings = parse_job_postings(response.json())
         if not job_postings:
-            logger.info(f"No more LinkedIn jobs found on page {page + 1}")
+            logger.info(f"No more jobs on page {page + 1}")
             break
         
         current_time = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
@@ -306,20 +322,21 @@ def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
             detail_data = fetch_job_detail(session, job['job_id'], headers, cookies)
             if detail_data:
                 company, tertiary = parse_job_detail(detail_data)
+                if "Jobs via Dice" in company:  # Ignore jobs from "Jobs via Dice"
+                    logger.info(f"Skipping job '{job['job_title']}' from 'Jobs via Dice'")
+                    continue
                 jobs.append({
                     "job_title": job["job_title"],
                     "company": company,
                     "location": tertiary["location"],
                     "url": job["url"],
                     "found_at": current_time,
-                    "posted_time": tertiary["repost_info"],  # Use repost_info as posted_time for consistency
-                    # "start_time": "N/A", Dont need..
+                    "posted_time": tertiary["repost_info"],
                     "key": job["url"],
-                    # "repost_info": tertiary["repost_info"],  # Dont need this again
-                    "apply_clicks": tertiary["apply_clicks"]  # Added
+                    "apply_clicks": tertiary["apply_clicks"]
                 })
         
-        logger.info(f"Found {len(job_postings)} LinkedIn jobs on page {page + 1}")
+        logger.info(f"Found {len(job_postings)} jobs on page {page + 1}")
         time.sleep(random.uniform(2, 5))
     
     return jobs
