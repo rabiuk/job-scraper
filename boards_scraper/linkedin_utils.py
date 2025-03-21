@@ -297,8 +297,21 @@ def parse_url_to_api_query(url):
     query_string = ",".join(query_parts)
     return f"{base_api_url}{query_string})"
 
+def fetch_job_description(session, job_id, headers, cookies):
+    """Fetches job description from LinkedIn API."""
+    url = f"https://www.linkedin.com/voyager/api/jobs/jobPostings/{job_id}"
+    response = session.get(url, headers=headers, cookies=cookies, timeout=30)
+    if response.status_code == 200:
+        data = response.json()
+        description = data.get("data", {}).get("description", {}).get("text", "No description available")
+        return description
+    logger.warning(f"Failed to fetch description for job {job_id}: {response.status_code}")
+    return "No description available"
+
 def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
-    """Fetches LinkedIn jobs, ignoring 'Jobs via Dice'."""
+    """Fetches LinkedIn jobs with descriptions, ignoring 'Jobs via Dice' and filtering entry-level."""
+    from utils import is_entry_level  # Import here or at the top of the file
+
     jobs = []
     base_api_url = parse_url_to_api_query(url)
     
@@ -320,11 +333,19 @@ def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
         current_time = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
         for job in job_postings:
             detail_data = fetch_job_detail(session, job['job_id'], headers, cookies)
+            description = fetch_job_description(session, job['job_id'], headers, cookies)
             if detail_data:
                 company, tertiary = parse_job_detail(detail_data)
-                if "Jobs via Dice" in company:  # Ignore jobs from "Jobs via Dice"
+                if "Jobs via Dice" in company:
                     logger.info(f"Skipping job '{job['job_title']}' from 'Jobs via Dice'")
                     continue
+                
+                # Check if the job is entry-level
+                mock_job = {"job_title": job["job_title"], "job_description": description}
+                if not is_entry_level(mock_job):
+                    logger.debug(f"Skipped non-entry-level job: {job['job_title']}")
+                    continue
+                
                 jobs.append({
                     "job_title": job["job_title"],
                     "company": company,
@@ -333,7 +354,8 @@ def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
                     "found_at": current_time,
                     "posted_time": tertiary["repost_info"],
                     "key": job["url"],
-                    "apply_clicks": tertiary["apply_clicks"]
+                    "apply_clicks": tertiary["apply_clicks"],
+                    "description": description  # Add description to job data
                 })
         
         logger.info(f"Found {len(job_postings)} jobs on page {page + 1}")
