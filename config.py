@@ -14,6 +14,9 @@ USER_AGENTS = [
 COMPANIES_FILE = "company_scraper/companies.json"
 SEEN_JOBS_FILE = "company_scraper/seen_jobs.json"
 
+BOARD_URLS_FILE = "boards_scraper/board_urls.json"
+BOARD_SEEN_JOBS_FILE = "boards_scraper/seen_jobs.json"
+
 
 EST = ZoneInfo("America/New_York")
 

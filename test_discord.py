@@ -5,7 +5,7 @@ from setup_environment import setup_environment
 # Setup environment
 setup_environment()
 
-url = os.getenv("DISCORD_WEBHOOK_URL")
+url = os.getenv("LINKEDIN_WEBHOOK_URL")
 print(f"Using URL: {url}")
 webhook = DiscordWebhook(url=url, content="Test message")
 response = webhook.execute()

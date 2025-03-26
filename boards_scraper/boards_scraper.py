@@ -11,14 +11,13 @@ from utils import send_discord_message, load_board_urls, load_seen_jobs, save_se
 from setup_environment import setup_environment
 from config import EST
 from boards_scraper.linkedin_utils import get_session, check_cookies_valid, login_to_linkedin, setup_selenium_driver, fetch_linkedin_jobs, COOKIE_FILE
+from config import BOARD_URLS_FILE, BOARD_SEEN_JOBS_FILE
 
 setup_environment()
 logger = logging.getLogger(__name__)
 
 session = LimiterSession(per_second=1)
-BOARD_URLS_FILE = "boards_scraper/board_urls.json"
-SEEN_JOBS_FILE = "boards_scraper/seen_jobs.json"
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+LINKEDIN_WEBHOOK_URL = os.getenv("LINKEDIN_WEBHOOK_URL")
 
 def get_current_est_time():
     """Get current time in EST as formatted string."""
@@ -193,13 +192,17 @@ SCRAPERS = {
 
 async def main():
     boards = load_board_urls(BOARD_URLS_FILE)
-    seen_jobs = load_seen_jobs(SEEN_JOBS_FILE)
+    seen_jobs = load_seen_jobs(BOARD_SEEN_JOBS_FILE)
+    SIMPLIFY_WEBHOOK_URL = os.getenv("SIMPLIFY_WEBHOOK_URL")
+    LINKEDIN_WEBHOOK_URL = os.getenv("LINKEDIN_WEBHOOK_URL")
 
     while True:
         logger.info(f"Starting new job check cycle ({get_current_est_time()})")
         total_new_jobs = 0
         cycle_jobs = set()
         new_jobs_to_send = []
+        has_simplify_jobs = False
+        has_linkedin_jobs = False
 
         for board in boards:
             board_name = board["board"]
@@ -217,7 +220,7 @@ async def main():
 
             new_jobs_count = 0
             for job in new_jobs:
-                job_key = job.get("key")  # ✅ Ensure we use the unique key
+                job_key = job.get("key")
                 job_url = job.get("url")
 
                 if job_key and job_key not in seen_jobs and job_url not in cycle_jobs:
@@ -226,6 +229,10 @@ async def main():
                     cycle_jobs.add(job_url)
                     seen_jobs[job_key] = job["found_at"]
                     new_jobs_to_send.append(job)
+                    if "simplify" in job_key:
+                        has_simplify_jobs = True
+                    else:
+                        has_linkedin_jobs = True
 
                     logger.info(f"✅ New job #{new_jobs_count} at {job['company']}:")
                     logger.info(f"  🏢 Company: {job['company']}")
@@ -240,8 +247,12 @@ async def main():
 
         if total_new_jobs > 0:
             cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
-            await send_discord_message(DISCORD_WEBHOOK_URL, cycle_start_message)
-            logger.info("Sent cycle start message to Discord")
+            # Send cycle start message only to channels with new jobs
+            if has_simplify_jobs:
+                await send_discord_message(SIMPLIFY_WEBHOOK_URL, cycle_start_message)
+            if has_linkedin_jobs:
+                await send_discord_message(LINKEDIN_WEBHOOK_URL, cycle_start_message)
+
             for job in new_jobs_to_send:
                 discord_message = (
                     f"New job at {job['company']}:\n"
@@ -250,17 +261,16 @@ async def main():
                     f"  Link: {job['url']}\n"
                     f"  Found At: {job['found_at']}\n"
                     f"  Posted At: {job['posted_time']}\n"
-                    f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"  # Added
+                    f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"
                 )
-                # Uncomment to send to Discord
-                await send_discord_message(DISCORD_WEBHOOK_URL, discord_message)
+                webhook_url = SIMPLIFY_WEBHOOK_URL if "simplify" in job["key"] else LINKEDIN_WEBHOOK_URL
+                await send_discord_message(webhook_url, discord_message)
                 await asyncio.sleep(1)
 
         logger.info(f"Cycle completed. Total new jobs: {total_new_jobs}")
-        save_seen_jobs(seen_jobs, total_new_jobs, SEEN_JOBS_FILE)
+        save_seen_jobs(seen_jobs, total_new_jobs, BOARD_SEEN_JOBS_FILE)
         logger.info("Waiting 30 mins before next check...")
         await asyncio.sleep(30 * 60)
-
 
 if __name__ == "__main__":
     asyncio.run(main())

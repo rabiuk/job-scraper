@@ -94,7 +94,7 @@ Or copy the project to `C:\Users\Kenny\Documents\Projects\JOB-SCRAPER\`.
 
      ```env
      # Board Scraper (Discord)
-     DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<WEBHOOK_ID>/<WEBHOOK_TOKEN>
+     LINKEDIN_WEBHOOK_URL=https://discord.com/api/webhooks/<WEBHOOK_ID>/<WEBHOOK_TOKEN>
 
      # Company Scraper (Email)
      EMAIL_ADDRESS=your.email@gmail.com
