@@ -31,7 +31,7 @@ def convert_to_est(utc_timestamp):
     return utc_time.astimezone(EST).strftime("%Y-%m-%d %H:%M:%S")
 
 def scrape_simplify(board, base_url):
-    """Scrape jobs from Simplify with dynamic country filtering, minimal logging."""
+    """Scrape jobs from Simplify with dynamic filtering for internships."""
     jobs = []
     api_url = "https://xv95tgzrem61cja4p.a1.typesense.net/multi_search"
     
@@ -48,6 +48,8 @@ def scrape_simplify(board, base_url):
     search_query = query_params.get("query", ["Software Engineer"])[0]
     experience = query_params.get("experience", ["Entry Level/New Grad"])[0]
     country = query_params.get("country", ["United States"])[0]
+    state = query_params.get("state", [None])[0]
+    points = query_params.get("points", [None])[0]
     
     page = 1
     per_page = 21
@@ -56,12 +58,28 @@ def scrape_simplify(board, base_url):
     logger.info(f"🔎 Searching {board} jobs in {country} (Cutoff: {convert_to_est(cutoff_unix_time)})")
 
     while True:
+        # Base filter setup
+        if experience == "Internship" and state == "Remote in USA":
+            filter_by_0 = f"experience_level:=[`Internship`] && locations:=[`Remote in USA`]"
+            filter_by_1 = f"locations:=[`Remote in USA`]"
+            filter_by_2 = f"experience_level:=[`Internship`]"
+        elif experience == "Internship" and points:
+            geo_coords = points.split(";")
+            geo_filter = f"geolocations:({geo_coords[0]}, {geo_coords[1]}, {geo_coords[0]}, {geo_coords[3]}, {geo_coords[2]}, {geo_coords[3]}, {geo_coords[2]}, {geo_coords[1]})"
+            filter_by_0 = f"countries:=[`Canada`] && experience_level:=[`Internship`] && {geo_filter}"
+            filter_by_1 = f"experience_level:=[`Internship`] && {geo_filter}"
+            filter_by_2 = f"countries:=[`Canada`] && {geo_filter}"
+        else:
+            filter_by_0 = f"countries:=[`{country}`] && experience_level:=[`{experience}`]"
+            filter_by_1 = f"experience_level:=[`{experience}`]"
+            filter_by_2 = f"countries:=[`{country}`]"
+
         payload = {
             "searches": [
                 {
                     "collection": "jobs",
                     "facet_by": "countries,degrees,experience_level,functions,locations",
-                    "filter_by": f"countries:=[`{country}`] && experience_level:=[`{experience}`]",
+                    "filter_by": filter_by_0,
                     "highlight_full_fields": "title,company_name,functions,locations",
                     "max_facet_values": 50,
                     "page": page,
@@ -72,8 +90,8 @@ def scrape_simplify(board, base_url):
                 },
                 {
                     "collection": "jobs",
-                    "facet_by": "countries",
-                    "filter_by": f"experience_level:=[`{experience}`]",
+                    "facet_by": "countries" if experience != "Internship" else "experience_level",
+                    "filter_by": filter_by_1,
                     "highlight_full_fields": "title,company_name,functions,locations",
                     "max_facet_values": 50,
                     "page": page,
@@ -84,8 +102,8 @@ def scrape_simplify(board, base_url):
                 },
                 {
                     "collection": "jobs",
-                    "facet_by": "experience_level",
-                    "filter_by": f"countries:=[`{country}`]",
+                    "facet_by": "experience_level" if experience != "Internship" else "locations",
+                    "filter_by": filter_by_2,
                     "highlight_full_fields": "title,company_name,functions,locations",
                     "max_facet_values": 50,
                     "page": page,
@@ -108,7 +126,7 @@ def scrape_simplify(board, base_url):
             result = data["results"][0]
             hits = result["hits"]
             total_found = result.get("found", 0)
-            logger.info(f"📌 Page {page}: Found {len(hits)}/{total_found} jobs")
+            logger.info(f"📌 Page 1: Found {len(hits)}/{total_found} jobs")
 
             if not hits:
                 logger.info("🚫 No more results.")
@@ -159,7 +177,6 @@ def scrape_simplify(board, base_url):
     
     return jobs
 
-
 def scrape_linkedin(board, base_url):
     """Scrape jobs from LinkedIn."""
     cookies_dict = None
@@ -194,6 +211,7 @@ async def main():
     boards = load_board_urls(BOARD_URLS_FILE)
     seen_jobs = load_seen_jobs(BOARD_SEEN_JOBS_FILE)
     SIMPLIFY_WEBHOOK_URL = os.getenv("SIMPLIFY_WEBHOOK_URL")
+    SIMPLIFY_INTERNSHIP_WEBHOOK_URL = os.getenv("SIMPLIFY_INTERNSHIP_WEBHOOK_URL")
     LINKEDIN_WEBHOOK_URL = os.getenv("LINKEDIN_WEBHOOK_URL")
     LINKEDIN_INTERNSHIP_WEBHOOK_URL = os.getenv("LINKEDIN_INTERNSHIP_WEBHOOK_URL")
 
@@ -203,6 +221,7 @@ async def main():
         cycle_jobs = set()
         new_jobs_to_send = []
         has_simplify_jobs = False
+        has_simplify_internships = False  # New flag
         has_linkedin_jobs = False
         has_linkedin_internships = False
 
@@ -231,10 +250,13 @@ async def main():
                     total_new_jobs += 1
                     cycle_jobs.add(job_url)
                     seen_jobs[job_key] = job["found_at"]
-                    job["is_internship"] = is_internship  # Add internship flag to job
+                    job["is_internship"] = is_internship
                     new_jobs_to_send.append(job)
                     if "simplify" in job_key:
-                        has_simplify_jobs = True
+                        if is_internship:
+                            has_simplify_internships = True
+                        else:
+                            has_simplify_jobs = True
                     elif is_internship:
                         has_linkedin_internships = True
                     else:
@@ -255,6 +277,8 @@ async def main():
             cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
             if has_simplify_jobs:
                 await send_discord_message(SIMPLIFY_WEBHOOK_URL, cycle_start_message)
+            if has_simplify_internships:
+                await send_discord_message(SIMPLIFY_INTERNSHIP_WEBHOOK_URL, cycle_start_message)
             if has_linkedin_jobs:
                 await send_discord_message(LINKEDIN_WEBHOOK_URL, cycle_start_message)
             if has_linkedin_internships:
@@ -271,7 +295,7 @@ async def main():
                     f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"
                 )
                 if "simplify" in job["key"]:
-                    webhook_url = SIMPLIFY_WEBHOOK_URL
+                    webhook_url = SIMPLIFY_INTERNSHIP_WEBHOOK_URL if job["is_internship"] else SIMPLIFY_WEBHOOK_URL
                 elif job["is_internship"]:
                     webhook_url = LINKEDIN_INTERNSHIP_WEBHOOK_URL
                 else:
@@ -283,6 +307,7 @@ async def main():
         save_seen_jobs(seen_jobs, total_new_jobs, BOARD_SEEN_JOBS_FILE)
         logger.info("Waiting 30 mins before next check...")
         await asyncio.sleep(30 * 60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
