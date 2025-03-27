@@ -195,6 +195,7 @@ async def main():
     seen_jobs = load_seen_jobs(BOARD_SEEN_JOBS_FILE)
     SIMPLIFY_WEBHOOK_URL = os.getenv("SIMPLIFY_WEBHOOK_URL")
     LINKEDIN_WEBHOOK_URL = os.getenv("LINKEDIN_WEBHOOK_URL")
+    LINKEDIN_INTERNSHIP_WEBHOOK_URL = os.getenv("LINKEDIN_INTERNSHIP_WEBHOOK_URL")
 
     while True:
         logger.info(f"Starting new job check cycle ({get_current_est_time()})")
@@ -203,13 +204,15 @@ async def main():
         new_jobs_to_send = []
         has_simplify_jobs = False
         has_linkedin_jobs = False
+        has_linkedin_internships = False
 
         for board in boards:
             board_name = board["board"]
             url = board["URL"]
             location = board["Location"]
+            is_internship = board.get("internship", False)
 
-            logger.info(f"SEARCHING {board_name.upper()} - {location.upper()}...")
+            logger.info(f"SEARCHING {board_name.upper()} - {location.upper()} {'(Internship)' if is_internship else ''}...")
             scraper = SCRAPERS.get(board_name)
             if not scraper:
                 logger.warning(f"No scraper defined for {board_name}")
@@ -228,9 +231,12 @@ async def main():
                     total_new_jobs += 1
                     cycle_jobs.add(job_url)
                     seen_jobs[job_key] = job["found_at"]
+                    job["is_internship"] = is_internship  # Add internship flag to job
                     new_jobs_to_send.append(job)
                     if "simplify" in job_key:
                         has_simplify_jobs = True
+                    elif is_internship:
+                        has_linkedin_internships = True
                     else:
                         has_linkedin_jobs = True
 
@@ -247,15 +253,16 @@ async def main():
 
         if total_new_jobs > 0:
             cycle_start_message = f"✨ NEW JOB ALERT ({get_current_est_time()}) ✨"
-            # Send cycle start message only to channels with new jobs
             if has_simplify_jobs:
                 await send_discord_message(SIMPLIFY_WEBHOOK_URL, cycle_start_message)
             if has_linkedin_jobs:
                 await send_discord_message(LINKEDIN_WEBHOOK_URL, cycle_start_message)
+            if has_linkedin_internships:
+                await send_discord_message(LINKEDIN_INTERNSHIP_WEBHOOK_URL, cycle_start_message)
 
             for job in new_jobs_to_send:
                 discord_message = (
-                    f"New job at {job['company']}:\n"
+                    f"New {'Internship' if job['is_internship'] else 'Job'} at {job['company']}:\n"
                     f"  Job Title: {job['job_title']}\n"
                     f"  Location: {job['location']}\n"
                     f"  Link: {job['url']}\n"
@@ -263,7 +270,12 @@ async def main():
                     f"  Posted At: {job['posted_time']}\n"
                     f"  Apply Clicks: {job.get('apply_clicks', 'N/A')}"
                 )
-                webhook_url = SIMPLIFY_WEBHOOK_URL if "simplify" in job["key"] else LINKEDIN_WEBHOOK_URL
+                if "simplify" in job["key"]:
+                    webhook_url = SIMPLIFY_WEBHOOK_URL
+                elif job["is_internship"]:
+                    webhook_url = LINKEDIN_INTERNSHIP_WEBHOOK_URL
+                else:
+                    webhook_url = LINKEDIN_WEBHOOK_URL
                 await send_discord_message(webhook_url, discord_message)
                 await asyncio.sleep(1)
 

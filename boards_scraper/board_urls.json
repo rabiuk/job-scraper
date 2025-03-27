@@ -2,21 +2,37 @@
   {
     "board": "Simplify",
     "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=United%20States&country=United%20States&experience=Entry%20Level%2FNew%20Grad&mostRecent=true",
-    "Location": "United States"
+    "Location": "United States",
+    "internship": false
   },
   {
     "board": "Simplify",
     "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=Canada&country=Canada&experience=Entry%20Level%2FNew%20Grad&mostRecent=true",
-    "Location": "Canada"
+    "Location": "Canada",
+    "internship": false
   },
   {
     "board": "LinkedIn",
     "URL": "https://www.linkedin.com/jobs/search/?currentJobId=4161827138&f_E=2&f_TPR=r3600&geoId=101174742&keywords=software%20engineer&origin=JOB_SEARCH_PAGE_KEYWORD_AUTOCOMPLETE&refresh=true&sortBy=DD",
-    "Location": "Canada"
+    "Location": "Canada",
+    "internship": false
   },
   {
     "board": "LinkedIn",
-    "URL": "://www.linkedin.com/jobs/search/?currentJobId=4182893698&f_E=2&f_TPR=r3600&geoId=103644278&keywords=software%20engineer&origin=JOB_SEARCH_PAGE_LOCATION_AUTOCOMPLETE&refresh=true&sortBy=DD",
-    "Location": "United States"
+    "URL": "https://www.linkedin.com/jobs/search/?currentJobId=4182893698&f_E=2&f_TPR=r3600&geoId=103644278&keywords=software%20engineer&origin=JOB_SEARCH_PAGE_LOCATION_AUTOCOMPLETE&refresh=true&sortBy=DD",
+    "Location": "United States",
+    "internship": false
+  },
+    {
+    "board": "LinkedIn",
+    "URL": "https://www.linkedin.com/jobs/search/?currentJobId=4191637498&f_E=1&f_TPR=r3600&geoId=101174742&keywords=software%20engineer&origin=JOB_SEARCH_PAGE_LOCATION_AUTOCOMPLETE&refresh=true&spellCorrectionEnabled=true",
+    "Location": "Canada",
+    "internship": true
+  },
+    {
+    "board": "LinkedIn",
+    "URL": "https://www.linkedin.com/jobs/search/?currentJobId=4191637498&f_E=1&f_TPR=r3600&geoId=101174742&keywords=software%20engineer&origin=JOB_SEARCH_PAGE_LOCATION_AUTOCOMPLETE&refresh=true&spellCorrectionEnabled=true",
+    "Location": "Remote US",
+    "internship": true
   }
 ]
