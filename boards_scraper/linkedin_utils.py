@@ -255,7 +255,7 @@ def parse_job_detail(detail_data):
 
 
 def parse_url_to_api_query(url):
-    """Converts LinkedIn URL to API query."""
+    """Converts LinkedIn URL to API query, exactly matching browser payload."""
     parsed_url = urlparse(url)
     params = parse_qs(parsed_url.query)
     
@@ -274,8 +274,6 @@ def parse_url_to_api_query(url):
         query_parts.append(f"keywords:{quote(params['keywords'][0])}")
     if "geoId" in params:
         query_parts.append(f"locationUnion:(geoId:{params['geoId'][0]})")
-    if "distance" in params:
-        query_parts.append(f"distance:{params['distance'][0]}")
     
     filters = []
     if "f_E" in params:
@@ -283,11 +281,7 @@ def parse_url_to_api_query(url):
     if "f_TPR" in params:
         filters.append(f"timePostedRange:List({params['f_TPR'][0]})")
     if "f_WT" in params:
-        filters.append(f"workRemoteAllowed:List({params['f_WT'][0]})")
-    if "f_C" in params:
-        filters.append(f"company:List({params['f_C'][0]})")
-    if "sortBy" in params:
-        filters.append(f"sortBy:List({params['sortBy'][0]})")
+        filters.append(f"workplaceType:List({params['f_WT'][0]})")
     if filters:
         query_parts.append(f"selectedFilters:({','.join(filters)})")
     
@@ -296,6 +290,8 @@ def parse_url_to_api_query(url):
     
     query_string = ",".join(query_parts)
     return f"{base_api_url}{query_string})"
+
+
 
 def fetch_job_description(session, job_id, headers, cookies):
     """Fetches job description from LinkedIn API."""
@@ -309,8 +305,8 @@ def fetch_job_description(session, job_id, headers, cookies):
     return "No description available"
 
 def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
-    """Fetches LinkedIn jobs with descriptions, ignoring 'Jobs via Dice' and filtering entry-level."""
-    from utils import is_entry_level  # Import here or at the top of the file
+    """Fetches LinkedIn jobs, trusting API response."""
+    from utils import is_entry_level
 
     jobs = []
     base_api_url = parse_url_to_api_query(url)
@@ -334,29 +330,31 @@ def fetch_linkedin_jobs(session, headers, cookies, url, max_pages=5):
         for job in job_postings:
             detail_data = fetch_job_detail(session, job['job_id'], headers, cookies)
             description = fetch_job_description(session, job['job_id'], headers, cookies)
-            if detail_data:
-                company, tertiary = parse_job_detail(detail_data)
-                if "Jobs via Dice" in company:
-                    logger.info(f"Skipping job '{job['job_title']}' from 'Jobs via Dice'")
-                    continue
+            if not detail_data:
+                continue
                 
-                # Check if the job is entry-level
-                mock_job = {"job_title": job["job_title"], "job_description": description}
-                if not is_entry_level(mock_job):
-                    logger.debug(f"Skipped non-entry-level job: {job['job_title']}")
-                    continue
+            company, tertiary = parse_job_detail(detail_data)
+            if "Jobs via Dice" in company:
+                logger.info(f"Skipping job '{job['job_title']}' from 'Jobs via Dice'")
+                continue
                 
-                jobs.append({
-                    "job_title": job["job_title"],
-                    "company": company,
-                    "location": tertiary["location"],
-                    "url": job["url"],
-                    "found_at": current_time,
-                    "posted_time": tertiary["repost_info"],
-                    "key": job["url"],
-                    "apply_clicks": tertiary["apply_clicks"],
-                    "description": description  # Add description to job data
-                })
+            # Check if job is entry-level
+            mock_job = {"job_title": job["job_title"], "job_description": description}
+            if not is_entry_level(mock_job):
+                logger.debug(f"Skipped non-entry-level job: {job['job_title']}")
+                continue
+                
+            jobs.append({
+                "job_title": job["job_title"],
+                "company": company,
+                "location": tertiary["location"],
+                "url": job["url"],
+                "found_at": current_time,
+                "posted_time": tertiary["repost_info"],
+                "key": job["url"],
+                "apply_clicks": tertiary["apply_clicks"],
+                "description": description
+            })
         
         logger.info(f"Found {len(job_postings)} jobs on page {page + 1}")
         time.sleep(random.uniform(2, 5))
