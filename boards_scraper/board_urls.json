@@ -11,6 +11,18 @@
     "Location": "Canada",
     "internship": false
   },
+    {
+    "board": "Simplify",
+    "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=Canada&points=83.13505%3B-52.619409%3B41.729668%3B-141.002742&country=Canada&experience=Internship&mostRecent=true&jobId=23548c7d-01ff-437f-ae9c-07e51f4c86b4",
+    "Location": "Canada",
+    "internship": true
+  },
+    {
+    "board": "Simplify",
+    "URL": "https://simplify.jobs/jobs?query=Software%20Engineer&state=Remote%20in%20USA&experience=Internship&mostRecent=true&jobId=6bc46a49-b867-4a80-9ba6-6ed23bc0b0cb",
+    "Location": "Remote US",
+    "internship": true
+  },
   {
     "board": "LinkedIn",
     "URL": "https://www.linkedin.com/jobs/search/?currentJobId=4161827138&f_E=2&f_TPR=r3600&geoId=101174742&keywords=software%20engineer&origin=JOB_SEARCH_PAGE_KEYWORD_AUTOCOMPLETE&refresh=true&sortBy=DD",
