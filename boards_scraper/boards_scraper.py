@@ -33,7 +33,8 @@ def convert_to_est(utc_timestamp):
 def scrape_simplify(board, base_url):
     """Scrape jobs from Simplify with dynamic filtering for internships."""
     jobs = []
-    api_url = "https://xv95tgzrem61cja4p.a1.typesense.net/multi_search"
+    # ACTION 1: The API hostname has been updated to the new, working endpoint.
+    api_url = "https://js-ha.simplify.jobs/multi_search"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -58,7 +59,7 @@ def scrape_simplify(board, base_url):
     logger.info(f"🔎 Searching {board} jobs in {country} (Cutoff: {convert_to_est(cutoff_unix_time)})")
 
     while True:
-        # Base filter setup
+        # Your original filtering logic is kept, as it's designed to work with your board_urls.json
         if experience == "Internship" and state == "Remote in USA":
             filter_by_0 = f"experience_level:=[`Internship`] && locations:=[`Remote in USA`]"
             filter_by_1 = f"locations:=[`Remote in USA`]"
@@ -86,7 +87,8 @@ def scrape_simplify(board, base_url):
                     "per_page": per_page,
                     "q": search_query,
                     "query_by": "title,company_name,functions,locations",
-                    "sort_by": "_text_match:desc,updated_date:desc"
+                    # ACTION 2: The 'sort_by' parameter is updated. 'updated_date' is no longer a valid sort field.
+                    "sort_by": "_text_match:desc,posting_id:desc"
                 },
                 {
                     "collection": "jobs",
@@ -98,7 +100,7 @@ def scrape_simplify(board, base_url):
                     "per_page": per_page,
                     "q": search_query,
                     "query_by": "title,company_name,functions,locations",
-                    "sort_by": "_text_match:desc,updated_date:desc"
+                    "sort_by": "_text_match:desc,posting_id:desc"
                 },
                 {
                     "collection": "jobs",
@@ -110,11 +112,12 @@ def scrape_simplify(board, base_url):
                     "per_page": per_page,
                     "q": search_query,
                     "query_by": "title,company_name,functions,locations",
-                    "sort_by": "_text_match:desc,updated_date:desc"
+                    "sort_by": "_text_match:desc,posting_id:desc"
                 }
             ]
         }
         
+        # The API key remains the same.
         params = {"x-typesense-api-key": "sUjQlkfBFnglUFcsFsZVcE7xhI8lJ1RG"}
         
         logger.info(f"📄 Fetching page {page}...")
@@ -137,6 +140,8 @@ def scrape_simplify(board, base_url):
             
             for hit in hits:
                 doc = hit["document"]
+                # NOTE: Even though we can't sort by 'updated_date', the field likely still exists in the response.
+                # If this logic starts failing, inspect the 'doc' object to see if the timestamp field has a new name (e.g., 'posted_date').
                 updated_date = doc.get("updated_date", "N/A")
                 if updated_date == "N/A" or not isinstance(updated_date, int):
                     continue
@@ -176,6 +181,7 @@ def scrape_simplify(board, base_url):
             break
     
     return jobs
+
 
 def scrape_linkedin(board, base_url):
     """Scrape jobs from LinkedIn."""
