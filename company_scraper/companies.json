@@ -49,5 +49,10 @@
     "Company": "DoorDash",
     "URL": "https://careersatdoordash.com/job-search/?function=Software%20Engineering%7C&department=Engineering%7C&keyword=&location=&intern=1&spage=1",
     "Location": "CA/US"
+  },
+  {
+    "Company": "HubSpot",
+    "URL": "https://www.hubspot.com/careers/jobs?q=Software%20Engineer",
+    "Location": "Remote"
   }
 ]

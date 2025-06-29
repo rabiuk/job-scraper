@@ -1339,6 +1339,110 @@ class DoorDashScraper(BaseScraper):
         jobs.sort(key=lambda x: x["posted_datetime"], reverse=True)
         return jobs
 
+class HubspotScraper(BaseScraper):
+    def __init__(self, company: str, base_url: str, location: str):
+        super().__init__(company, base_url, location)
+        # HubSpot uses a GraphQL API
+        self.api_url = "https://wtcfns.hubspot.com/careers/graphql"
+        self.headers.update({
+            "Content-Type": "application/json",
+            "Origin": "https://www.hubspot.com",
+            "Referer": "https://www.hubspot.com/careers/jobs"
+        })
+        
+        # Extract search query from the URL provided in companies.json
+        parsed_url = urlparse(self.base_url)
+        self.query_params = parse_qs(parsed_url.query)
+        search_query = self.query_params.get("q", [""])[0]
+
+        # Prepare the GraphQL payload
+        self.payload = {
+            "operationName": "Jobs",
+            "query": """
+                query Jobs($departmentIds: [Int], $officeIds: [Int], $languages: [String], $roleTypes: [String], $searchQuery: String) {
+                    jobs(departmentIds: $departmentIds, officeIds: $officeIds, languages: $languages, roleTypes: $roleTypes, searchQuery: $searchQuery) {
+                        id
+                        title
+                        department { name id }
+                        office { id location }
+                        location { name }
+                    }
+                }
+            """,
+            "variables": {
+                "departmentIds": [],
+                "officeIds": [],
+                "languages": [],
+                "roleTypes": [],
+                "searchQuery": search_query
+            }
+        }
+
+    def scrape(self):
+        jobs = []
+        search_query = self.payload["variables"]["searchQuery"]
+        logger.info(f"Scraping {self.company} jobs with query: '{search_query}'")
+
+        try:
+            # Unlike other scrapers, HubSpot's GraphQL endpoint returns all results at once.
+            # There is no pagination needed.
+            response = self.session.post(self.api_url, headers=self.headers, json=self.payload, timeout=30)
+            response.raise_for_status()
+            
+            data = response.json()
+            job_list = data.get("data", {}).get("jobs", [])
+
+            if not job_list:
+                logger.info("No jobs found for the specified query.")
+                return jobs
+
+            logger.info(f"Found {len(job_list)} total jobs from API response.")
+
+            for job in job_list:
+                job_id = job.get("id")
+                if not job_id:
+                    logger.warning("Job missing ID, skipping.")
+                    continue
+
+                job_title = job.get("title", "Unknown Title")
+                
+                # Use the helper function to check for entry-level keywords
+                mock_job = {"job_title": job_title, "job_description": ""}
+                if not is_entry_level(mock_job):
+                    logger.debug(f"Skipping non-entry-level job: {job_title}")
+                    continue
+
+                # The careers site uses this URL structure
+                job_url = f"https://www.hubspot.com/careers/jobs/{job_id}"
+                
+                # The 'office' object seems to have the most descriptive location
+                job_location = job.get("office", {}).get("location", self.location)
+
+                # The API does not provide a posting date, so we mark it as unknown
+                posted_time = "Unknown"
+                posted_datetime = datetime.now()
+
+                job_entry = create_job_entry(
+                    company=self.company,
+                    job_title=job_title,
+                    url=job_url,
+                    location=job_location,
+                    posted_time=posted_time,
+                    posted_datetime=posted_datetime
+                )
+                jobs.append(job_entry)
+                logger.debug(f"Added entry-level job: {job_title} at {job_location}")
+
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch jobs from HubSpot API: {e}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during HubSpot scraping: {e}")
+            if 'response' in locals():
+                logger.debug(f"Response text: {response.text[:500]}")
+
+        logger.info(f"Extracted {len(jobs)} entry-level jobs from {self.company}")
+        return jobs
+
 
 SCRAPERS = {
     "Amazon": AmazonScraper,
@@ -1350,5 +1454,6 @@ SCRAPERS = {
     "Apple": AppleScraper,
     "Uber": UberScraper,
     "Twitch": TwitchScraper,
-    "DoorDash": DoorDashScraper
+    "DoorDash": DoorDashScraper,
+    "HubSpot": HubspotScraper
 }
